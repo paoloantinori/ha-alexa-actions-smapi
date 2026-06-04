@@ -1,0 +1,1 @@
+"""Alexa Actions SMAPI integration."""
