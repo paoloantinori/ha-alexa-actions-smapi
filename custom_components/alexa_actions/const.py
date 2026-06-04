@@ -6,3 +6,7 @@ LWA_AUTH_URL = "https://www.amazon.com/ap/oa"
 LWA_TOKEN_URL = "https://api.amazon.com/auth/O2/token"
 
 SCOPE_SMAPI = "alexa::ask:skills:readwrite alexa::ask:models:readwrite"
+
+SMAPI_BASE_URL = "https://api.amazonalexa.com"
+
+DEFAULT_SKILL_NAME = "actionable notifications"
