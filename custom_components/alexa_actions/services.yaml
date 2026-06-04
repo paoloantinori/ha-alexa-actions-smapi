@@ -1,0 +1,32 @@
+send:
+  name: Send actionable notification
+  description: Sends an actionable notification via Alexa
+  fields:
+    text:
+      name: Text
+      description: The text for Alexa to speak
+      required: true
+      selector:
+        text:
+    event_id:
+      name: Event ID
+      description: Unique identifier for correlating the response (auto-generated if omitted)
+      required: false
+      selector:
+        text:
+    suppress_confirmation:
+      name: Suppress confirmation
+      description: When true, Alexa will not say "Okay" after the user responds
+      required: false
+      default: false
+      selector:
+        boolean:
+    options:
+      name: Options
+      description: List of predefined options for the Select intent
+      required: false
+      selector:
+        select:
+          multiple: true
+          options: []
+          custom_value: true

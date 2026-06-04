@@ -22,3 +22,6 @@ CONF_SKILL_ID = "skill_id"
 CONF_VENDOR_ID = "vendor_id"
 CONF_LAMBDA_ARN = "lambda_arn"
 CONF_REFRESH_TOKEN = "refresh_token"
+
+SERVICE_SEND = "send"
+INPUT_TEXT_ENTITY = "input_text.alexa_actionable_notification"
