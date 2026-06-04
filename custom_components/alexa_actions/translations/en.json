@@ -1,0 +1,56 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Alexa Actionable Notifications",
+        "description": "Set up Alexa actionable notifications via SMAPI.",
+        "data": {
+          "client_id": "LWA Client ID",
+          "client_secret": "LWA Client Secret",
+          "aws_access_key_id": "AWS Access Key ID",
+          "aws_secret_access_key": "AWS Secret Access Key",
+          "aws_region": "AWS Region",
+          "ha_url": "Home Assistant URL",
+          "ha_token": "Long-Lived Access Token",
+          "invocation_name": "Skill Invocation Name",
+          "locales": "Locales"
+        }
+      },
+      "auth_smapi": {
+        "title": "Authorize with Amazon",
+        "description": "Click the link below to authorize with Amazon LWA.\n\n[Authorize]({auth_url})\n\nCallback URL: `{callback_url}`"
+      },
+      "setup": {
+        "title": "Setting up",
+        "description": "Deploying Lambda and creating Alexa skill..."
+      },
+      "finish": {
+        "title": "Setup Complete",
+        "description": "Your Alexa actionable notification skill is ready!\n\nSkill ID: `{skill_id}`\nLambda ARN: `{lambda_arn}`"
+      }
+    },
+    "error": {
+      "invalid_auth": "Authorization failed. Please try again.",
+      "authorization_pending": "Waiting for authorization...",
+      "smapi_error": "SMAPI setup failed. Check logs for details.",
+      "aws_error": "AWS deployment failed. Check credentials and permissions.",
+      "cannot_connect": "Failed to connect to Amazon LWA.",
+      "unknown": "Unexpected error occurred."
+    },
+    "abort": {
+      "already_configured": "This LWA Client ID is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Options",
+        "description": "Update Alexa Actions settings. Changing invocation name or HA URL will redeploy Lambda and update the skill manifest.",
+        "data": {
+          "invocation_name": "Skill Invocation Name",
+          "ha_url": "Home Assistant URL"
+        }
+      }
+    }
+  }
+}
