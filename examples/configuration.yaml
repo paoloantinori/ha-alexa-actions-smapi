@@ -1,0 +1,77 @@
+# ---------------------------------------------------------------------------
+# Example Home Assistant configuration for alexa_actions
+# ---------------------------------------------------------------------------
+#
+# 1. Required input_text entity
+#
+#    The integration writes the notification payload to this entity.
+#    Add it to your configuration.yaml (or a split package):
+#
+input_text:
+  alexa_actionable_notification:
+    name: Alexa Actionable Notification
+    # 255 is the shortest reliable max for the state attribute across
+    # all HA versions that the integration supports.  The actual payload
+    # is a JSON string that can exceed this when options are long, so if
+    # you see truncated payloads increase max or move the entity to a
+    # helper defined through the UI (no length limit).
+    max: 255
+
+# ---------------------------------------------------------------------------
+# 2. Example automation using the blueprint
+#
+#    After importing the blueprint file (Settings > Blueprints > Import),
+#    create a new automation from it and fill in the inputs.
+#
+#    You can also call the alexa_actions.send service directly from scripts
+#    or other automations:
+#
+# script:
+#   ask_dinner:
+#     alias: "Ask what's for dinner"
+#     sequence:
+#       - action: alexa_actions.send
+#         data:
+#           text: "What would you like for dinner?"
+#           event_id: "dinner_request"
+#           options:
+#             - "Pizza"
+#             - "Pasta"
+#             - "Salad"
+#         target:
+#           entity_id: media_player.living_room_echo
+#
+#       - wait_for_trigger:
+#           - platform: event
+#             event_type: alexa_actionable_notification
+#             event_data:
+#               event_id: "dinner_request"
+#         timeout:
+#           minutes: 2
+#
+#       - choose:
+#           - conditions:
+#               - condition: template
+#                 value_template: >
+#                   {{ wait.trigger.event.data.event_response == 'Pizza' }}
+#             sequence:
+#               - action: script.order_pizza
+#
+#           - conditions:
+#               - condition: template
+#                 value_template: >
+#                   {{ wait.trigger.event.data.event_response == 'Pasta' }}
+#             sequence:
+#               - action: script.cook_pasta
+#
+#           - conditions:
+#               - condition: template
+#                 value_template: >
+#                   {{ wait.trigger.event.data.event_response == 'Salad' }}
+#             sequence:
+#               - action: script.make_salad
+#
+#         default:
+#           - action: notify.mobile_app_phone
+#             data:
+#               message: "No dinner choice received"

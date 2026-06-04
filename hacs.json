@@ -1,0 +1,8 @@
+{
+  "name": "Alexa Actionable Notifications",
+  "content_in_root": false,
+  "zip_release_url": "",
+  "filename": "alexa_actions.zip",
+  "domains": ["alexa_actions"],
+  "homeassistant": "2024.1.0"
+}

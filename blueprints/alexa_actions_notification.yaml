@@ -1,0 +1,167 @@
+blueprint:
+  name: Alexa Actionable Notification
+  description: >-
+    Send an actionable notification to an Alexa device and wait for the user's
+    voice response.  The response is available in the 'wait' template variable
+    so you can branch on it in follow-up actions.
+
+    Response types: ResponseYes, ResponseNo, ResponseSelect, ResponseNumeric,
+    ResponseString, ResponseDuration, ResponseDateTime, ResponseNone.
+  domain: automation
+  input:
+    trigger_entity:
+      name: Trigger Entity
+      description: Entity whose state change triggers the notification.
+      selector:
+        entity:
+    trigger_state:
+      name: Trigger State
+      description: Target state value that fires the automation.
+      default: "on"
+      selector:
+        text:
+    notification_text:
+      name: Notification Text
+      description: The question or statement Alexa will speak.
+      selector:
+        text:
+    alexa_device:
+      name: Alexa Device
+      description: >-
+        The media_player entity for the target Echo device.
+        Leave empty if the integration already targets a specific device.
+      default: ""
+      selector:
+        entity:
+          domain: media_player
+    event_id:
+      name: Event ID
+      description: >-
+        Unique identifier for correlating the response.
+        Leave blank to auto-generate a random ID.
+      default: ""
+      selector:
+        text:
+    suppress_confirmation:
+      name: Suppress Confirmation
+      description: When true, Alexa will not say "Okay" after the user responds.
+      default: false
+      selector:
+        boolean:
+    options:
+      name: Response Options
+      description: >-
+        Predefined choices for the Select intent (comma-separated).
+        Example: "Pizza,Pasta,Salad"
+      default: []
+      selector:
+        select:
+          multiple: true
+          options: []
+          custom_value: true
+    timeout_seconds:
+      name: Response Timeout (seconds)
+      description: How long to wait for the user to respond.
+      default: 120
+      selector:
+        number:
+          min: 10
+          max: 300
+          unit_of_measurement: seconds
+
+trigger:
+  - platform: state
+    entity_id: !input trigger_entity
+    to: !input trigger_state
+
+variables:
+  # Generate a stable event_id so the wait_for_trigger can match it.
+  # Using range/random produces a new value each run while remaining
+  # consistent within the same automation execution.
+  evt_id: >-
+    {% set eid = !input event_id %}
+    {{ eid if eid else range(1, 1000000) | random | string }}
+
+action:
+  # 1. Send the actionable notification
+  - action: alexa_actions.send
+    data:
+      text: !input notification_text
+      event_id: "{{ evt_id }}"
+      suppress_confirmation: !input suppress_confirmation
+      options: !input options
+    target:
+      entity_id: !input alexa_device
+
+  # 2. Wait for the Lambda to post back the response event
+  - wait_for_trigger:
+      - platform: event
+        event_type: alexa_actionable_notification
+        event_data:
+          event_id: "{{ evt_id }}"
+    timeout:
+      seconds: !input timeout_seconds
+    continue_on_timeout: true
+
+  # 3. Branch on the response type.
+  #    Available template variables after the wait:
+  #      wait.trigger.event.data.event_id
+  #      wait.trigger.event.data.event_response
+  #      wait.trigger.event.data.event_response_type
+  - choose:
+      # --- Yes response ---
+      - conditions:
+          - condition: template
+            value_template: >-
+              {{ wait.trigger is not none and
+                 wait.trigger.event.data.event_response_type == 'ResponseYes' }}
+        sequence:
+          - delay:
+              seconds: 0
+          # Add your "yes" actions here.  The placeholder delay above
+          # prevents an empty sequence.  Replace it with real actions,
+          # for example:
+          #   - action: light.turn_on
+          #     target:
+          #       entity_id: light.living_room
+
+      # --- No response ---
+      - conditions:
+          - condition: template
+            value_template: >-
+              {{ wait.trigger is not none and
+                 wait.trigger.event.data.event_response_type == 'ResponseNo' }}
+        sequence:
+          - delay:
+              seconds: 0
+          # Add your "no" actions here.
+
+      # --- Select response (user chose from options list) ---
+      - conditions:
+          - condition: template
+            value_template: >-
+              {{ wait.trigger is not none and
+                 wait.trigger.event.data.event_response_type == 'ResponseSelect' }}
+        sequence:
+          - delay:
+              seconds: 0
+          # The selected value is: wait.trigger.event.data.event_response
+
+      # --- Numeric response ---
+      - conditions:
+          - condition: template
+            value_template: >-
+              {{ wait.trigger is not none and
+                 wait.trigger.event.data.event_response_type == 'ResponseNumeric' }}
+        sequence:
+          - delay:
+              seconds: 0
+          # The number is: wait.trigger.event.data.event_response
+
+    # --- Timeout or unhandled response type ---
+    default:
+      - delay:
+          seconds: 0
+      # This runs when the user didn't respond in time (wait.trigger is none)
+      # or when the response type didn't match any branch above.
+      # Check: {{ wait.trigger is none }}  to distinguish timeout from ResponseNone.
