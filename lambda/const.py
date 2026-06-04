@@ -1,0 +1,12 @@
+"""Response type constants for alexa-actionable-notification events."""
+
+INPUT_TEXT_ENTITY = "input_text.alexa_actionable_notification"
+LOCALIZATION_ATTR = "_"
+RESPONSE_YES = "ResponseYes"
+RESPONSE_NO = "ResponseNo"
+RESPONSE_NONE = "ResponseNone"
+RESPONSE_SELECT = "ResponseSelect"
+RESPONSE_NUMERIC = "ResponseNumeric"
+RESPONSE_DURATION = "ResponseDuration"
+RESPONSE_STRING = "ResponseString"
+RESPONSE_DATE_TIME = "ResponseDateTime"
