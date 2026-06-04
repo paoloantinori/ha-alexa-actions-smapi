@@ -1,0 +1,36 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Alexa Actionable Notifications SMAPI skill.
+  Lambda function that bridges Alexa commands to Home Assistant.
+
+Globals:
+  Function:
+    Timeout: 30
+    MemorySize: 128
+
+Resources:
+  AlexaActionFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: alexa-actionable-notifications
+      Description: Alexa actionable notifications Lambda for Home Assistant
+      CodeUri: lambda/
+      Runtime: python3.12
+      Handler: lambda_function.lambda_handler
+      Environment:
+        Variables:
+          HOME_ASSISTANT_URL: ""
+          VERIFY_SSL: "true"
+          TOKEN: ""
+          DEBUG: "false"
+      Policies:
+        - AWSLambdaBasicExecutionRole
+
+Outputs:
+  LambdaArn:
+    Description: ARN of the Alexa actionable notifications Lambda
+    Value: !GetAtt AlexaActionFunction.Arn
+  LambdaFunctionName:
+    Description: Name of the Lambda function
+    Value: !Ref AlexaActionFunction
