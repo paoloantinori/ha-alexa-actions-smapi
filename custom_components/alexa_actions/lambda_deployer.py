@@ -16,7 +16,8 @@ import boto3
 from botocore.exceptions import ClientError
 
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import HomeAssistantError
+
+from .exceptions import AWSDeploymentError
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -49,39 +50,35 @@ class LambdaDeployer:
         self._aws_region = aws_region
 
     # ------------------------------------------------------------------
-    # boto3 client factories (sync — call from executor thread only)
+    # boto3 client factory (sync — call from executor thread only)
     # ------------------------------------------------------------------
 
-    def _get_lambda_client(self):
-        """Return a boto3 Lambda client."""
+    def _get_boto3_client(self, service_name: str):
+        """Return a boto3 client for *service_name* with stored credentials."""
         return boto3.client(
-            "lambda",
+            service_name,
             aws_access_key_id=self._aws_access_key_id,
             aws_secret_access_key=self._aws_secret_access_key,
             region_name=self._aws_region,
-        )
-
-    def _get_iam_client(self):
-        """Return a boto3 IAM client."""
-        return boto3.client(
-            "iam",
-            aws_access_key_id=self._aws_access_key_id,
-            aws_secret_access_key=self._aws_secret_access_key,
         )
 
     # ------------------------------------------------------------------
     # IAM role
     # ------------------------------------------------------------------
 
-    def _ensure_role(self) -> str:
-        """Create or retrieve the IAM execution role.  Returns the role ARN."""
-        iam = self._get_iam_client()
+    def _ensure_role(self) -> tuple[str, bool]:
+        """Create or retrieve the IAM execution role.
+
+        Returns (role_arn, was_created) so callers can decide whether
+        to wait for IAM propagation.
+        """
+        iam = self._get_boto3_client("iam")
 
         # Reuse an existing role if one is already present.
         try:
             response = iam.get_role(RoleName=_ROLE_NAME)
             _LOGGER.debug("IAM role %s already exists", _ROLE_NAME)
-            return response["Role"]["Arn"]
+            return response["Role"]["Arn"], False
         except ClientError:
             pass
 
@@ -107,7 +104,7 @@ class LambdaDeployer:
             PolicyArn="arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole",
         )
         _LOGGER.info("Created IAM role %s", _ROLE_NAME)
-        return response["Role"]["Arn"]
+        return response["Role"]["Arn"], True
 
     # ------------------------------------------------------------------
     # Zip packaging
@@ -134,7 +131,7 @@ class LambdaDeployer:
         if dev_layout.is_dir():
             return dev_layout
 
-        raise HomeAssistantError(
+        raise AWSDeploymentError(
             f"Lambda source directory not found. Searched: {bundled}, {dev_layout}"
         )
 
@@ -164,7 +161,7 @@ class LambdaDeployer:
             timeout=300,
         )
         if result.returncode != 0:
-            raise HomeAssistantError(
+            raise AWSDeploymentError(
                 f"pip install failed (exit {result.returncode}): {result.stderr[:500]}"
             )
 
@@ -210,7 +207,7 @@ class LambdaDeployer:
         environment: dict[str, str],
     ) -> str:
         """Create or update the Lambda function.  Returns the function ARN."""
-        lambda_client = self._get_lambda_client()
+        lambda_client = self._get_boto3_client("lambda")
 
         # Attempt to update an existing function first.
         try:
@@ -274,12 +271,16 @@ class LambdaDeployer:
             zip_bytes = await self._hass.async_add_executor_job(self._build_zip)
 
             # Ensure the IAM execution role exists.
-            role_arn = await self._hass.async_add_executor_job(self._ensure_role)
+            role_arn, role_created = await self._hass.async_add_executor_job(
+                self._ensure_role
+            )
 
-            # Brief pause to allow IAM role propagation before creating the
-            # Lambda function.  AWS recommends up to 10 s; 5 s is usually
-            # sufficient in practice.
-            await asyncio.sleep(5)
+            # Brief pause to allow IAM role propagation when a new role was
+            # just created.  AWS recommends up to 10 s; 5 s is usually
+            # sufficient in practice.  Skip the delay when reusing an
+            # existing role.
+            if role_created:
+                await asyncio.sleep(5)
 
             # Create or update the Lambda function.
             arn = await self._hass.async_add_executor_job(
@@ -291,10 +292,10 @@ class LambdaDeployer:
         except ClientError as err:
             self._raise_aws_error(err)
             raise  # unreachable, but satisfies type checker
-        except HomeAssistantError:
+        except AWSDeploymentError:
             raise
         except Exception as err:
-            raise HomeAssistantError(
+            raise AWSDeploymentError(
                 f"Lambda deployment failed: {err}"
             ) from err
 
@@ -304,23 +305,23 @@ class LambdaDeployer:
 
     @staticmethod
     def _raise_aws_error(err: ClientError) -> None:
-        """Translate a boto3 ClientError into a HomeAssistantError."""
+        """Translate a boto3 ClientError into an AWSDeploymentError."""
         code = err.response["Error"]["Code"]
         message = err.response["Error"]["Message"]
 
         if code == "AccessDeniedException":
-            raise HomeAssistantError(
+            raise AWSDeploymentError(
                 f"AWS access denied — check IAM permissions: {message}"
             ) from err
         if code == "ResourceLimitExceededException":
-            raise HomeAssistantError(
+            raise AWSDeploymentError(
                 f"AWS quota exceeded: {message}"
             ) from err
         if code in ("InvalidParameterValueException", "ValidationException"):
-            raise HomeAssistantError(
+            raise AWSDeploymentError(
                 f"Invalid AWS parameter: {message}"
             ) from err
 
-        raise HomeAssistantError(
+        raise AWSDeploymentError(
             f"AWS deployment failed ({code}): {message}"
         ) from err

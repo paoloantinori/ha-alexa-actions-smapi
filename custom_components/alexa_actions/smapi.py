@@ -9,6 +9,8 @@ import aiohttp
 
 from homeassistant.exceptions import HomeAssistantError
 
+from .exceptions import SMAPIError
+
 from .api import LWAClient
 from .const import DEFAULT_SKILL_NAME, SMAPI_BASE_URL
 
@@ -79,7 +81,6 @@ class SMAPI:
 
     def __init__(self, lwa_client: LWAClient) -> None:
         self._lwa_client = lwa_client
-        self._session: aiohttp.ClientSession | None = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -89,10 +90,10 @@ class SMAPI:
         """Return the first vendor ID from the Amazon developer account."""
         data = await self._async_request("GET", "/v1/vendors")
         if not isinstance(data, dict):
-            raise HomeAssistantError("Unexpected response from vendor list API")
+            raise SMAPIError("Unexpected response from vendor list API")
         vendors = data.get("vendors", [])
         if not vendors:
-            raise HomeAssistantError("No Amazon vendor account found")
+            raise SMAPIError("No Amazon vendor account found")
         return vendors[0]["id"]
 
     async def async_update_manifest(
@@ -214,7 +215,7 @@ class SMAPI:
             else:
                 break
 
-        raise HomeAssistantError(
+        raise SMAPIError(
             f"Model build timed out after {timeout}s"
             " — no locales reached SUCCEEDED"
         )
@@ -301,7 +302,7 @@ class SMAPI:
         upload_locales = [r for r in results if r is not None]
 
         if not upload_locales:
-            raise HomeAssistantError(
+            raise SMAPIError(
                 "All model uploads failed — no usable locales for skill"
             )
 
@@ -355,7 +356,7 @@ class SMAPI:
             json={"vendorId": vendor_id, "manifest": manifest},
         )
         if not isinstance(data, dict) or "skillId" not in data:
-            raise HomeAssistantError(
+            raise SMAPIError(
                 "Skill creation did not return a skill ID"
             )
         return data["skillId"]
@@ -391,12 +392,12 @@ class SMAPI:
             "GET", "/v1/skills", params={"vendorId": vendor_id}
         )
         if not isinstance(data, dict):
-            raise HomeAssistantError(
+            raise SMAPIError(
                 "Skill conflict but no existing skills found"
             )
         skills = data.get("skills", [])
         if not skills:
-            raise HomeAssistantError(
+            raise SMAPIError(
                 "Skill conflict but no existing skills found"
             )
         skill_id = skills[0]["skillId"]
@@ -450,15 +451,10 @@ class SMAPI:
         if "Content-Type" not in headers:
             headers["Content-Type"] = "application/json"
 
-        if self._session is None or self._session.closed:
-            connector = aiohttp.TCPConnector(
-                resolver=aiohttp.resolver.ThreadedResolver(),
-            )
-            self._session = aiohttp.ClientSession(connector=connector)
-
+        session = await self._lwa_client.get_session()
         url = f"{SMAPI_BASE_URL}{path}"
         try:
-            async with self._session.request(
+            async with session.request(
                 method, url, headers=headers, **kwargs
             ) as resp:
                 if resp.status == 401:
@@ -469,12 +465,12 @@ class SMAPI:
                         path,
                         body[:500],
                     )
-                    raise HomeAssistantError(
+                    raise SMAPIError(
                         f"Invalid LWA credentials: {body[:200]}"
                     )
                 if resp.status == 409:
                     text = await resp.text()
-                    raise HomeAssistantError(f"Conflict (409): {text}")
+                    raise SMAPIError(f"Conflict (409): {text}")
                 if resp.status == 204:
                     return None
                 if resp.status >= 400:
@@ -486,19 +482,14 @@ class SMAPI:
                         resp.status,
                         body[:500],
                     )
-                    raise HomeAssistantError(
+                    raise SMAPIError(
                         f"SMAPI error ({resp.status}): {body[:200]}"
                     )
                 return await resp.json()
         except HomeAssistantError:
             raise
         except aiohttp.ClientError as err:
-            raise HomeAssistantError(
+            raise SMAPIError(
                 f"SMAPI request failed: {err}"
             ) from err
 
-    async def async_close(self) -> None:
-        """Close the underlying HTTP session (call on integration unload)."""
-        if self._session is not None and not self._session.closed:
-            await self._session.close()
-            self._session = None

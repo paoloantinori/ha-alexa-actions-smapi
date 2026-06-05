@@ -23,6 +23,7 @@ from homeassistant.helpers.selector import (
 from homeassistant.helpers.network import NoURLAvailableError, get_url
 
 from .api import LWAClient
+from .exceptions import AWSDeploymentError, SMAPIError
 from .const import (
     CONF_AWS_ACCESS_KEY_ID,
     CONF_AWS_REGION,
@@ -40,7 +41,7 @@ from .const import (
     SCOPE_SMAPI,
 )
 from .lambda_deployer import LambdaDeployer
-from .models import get_model
+from .models import LOCALE_LABELS, get_model
 from .smapi import SMAPI
 from .views import AlexaAuthCallbackView
 
@@ -56,21 +57,8 @@ _AWS_REGION_OPTIONS: list[SelectOptionDict] = [
 ]
 
 _LOCALE_OPTIONS: list[SelectOptionDict] = [
-    SelectOptionDict(value="de-DE", label="German (DE)"),
-    SelectOptionDict(value="en-AU", label="English (AU)"),
-    SelectOptionDict(value="en-CA", label="English (CA)"),
-    SelectOptionDict(value="en-GB", label="English (UK)"),
-    SelectOptionDict(value="en-IN", label="English (IN)"),
-    SelectOptionDict(value="en-US", label="English (US)"),
-    SelectOptionDict(value="es-ES", label="Spanish (ES)"),
-    SelectOptionDict(value="es-MX", label="Spanish (MX)"),
-    SelectOptionDict(value="es-US", label="Spanish (US)"),
-    SelectOptionDict(value="fr-CA", label="French (CA)"),
-    SelectOptionDict(value="fr-FR", label="French (FR)"),
-    SelectOptionDict(value="hi-IN", label="Hindi (IN)"),
-    SelectOptionDict(value="it-IT", label="Italian (IT)"),
-    SelectOptionDict(value="ja-JP", label="Japanese (JP)"),
-    SelectOptionDict(value="pt-BR", label="Portuguese (BR)"),
+    SelectOptionDict(value=locale, label=label)
+    for locale, label in LOCALE_LABELS.items()
 ]
 
 _DEFAULT_LOCALES = ["en-US"]
@@ -219,7 +207,7 @@ class AlexaActionsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         # authorizing.  Try to find the auth code.
         if user_input is not None:
             auth_codes = self.hass.data.get(DOMAIN, {}).get("auth_codes", {})
-            code = auth_codes.get(self._auth_state)
+            code = auth_codes.pop(self._auth_state, None)
 
             if code:
                 try:
@@ -310,14 +298,15 @@ class AlexaActionsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
                 return await self.async_step_finish()
 
+            except AWSDeploymentError as err:
+                _LOGGER.error("AWS deployment failed: %s", err)
+                errors["base"] = "aws_error"
+            except SMAPIError as err:
+                _LOGGER.error("SMAPI setup failed: %s", err)
+                errors["base"] = "smapi_error"
             except HomeAssistantError as err:
-                error_str = str(err)
-                if "AWS" in error_str or "Lambda" in error_str:
-                    _LOGGER.error("AWS deployment failed: %s", err)
-                    errors["base"] = "aws_error"
-                else:
-                    _LOGGER.error("SMAPI setup failed: %s", err)
-                    errors["base"] = "smapi_error"
+                _LOGGER.error("Setup failed: %s", err)
+                errors["base"] = "unknown"
             except Exception as err:  # noqa: BLE001
                 _LOGGER.exception("Unexpected error during setup")
                 errors["base"] = "unknown"
@@ -465,7 +454,6 @@ class AlexaActionsOptionsFlow(config_entries.OptionsFlow):
                         )
 
                     await lwa_client.async_close()
-                    await smapi.async_close()
 
                 # Update the config entry data with new values.
                 new_data = dict(entry_data)

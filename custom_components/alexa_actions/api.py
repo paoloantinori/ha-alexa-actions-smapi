@@ -16,8 +16,6 @@ _LOGGER = logging.getLogger(__name__)
 
 _TOKEN_BUFFER_SECONDS = 60
 
-_SMAPI_SCOPE_PARTS = frozenset(SCOPE_SMAPI.split())
-
 
 class _TokenCache:
     """Simple cache entry holding an access token and its monotonic expiry."""
@@ -108,7 +106,7 @@ class LWAClient:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    async def _get_session(self) -> aiohttp.ClientSession:
+    async def get_session(self) -> aiohttp.ClientSession:
         """Return a reusable aiohttp session, creating one if needed."""
         if self._session is None or self._session.closed:
             connector = aiohttp.TCPConnector(
@@ -147,7 +145,7 @@ class LWAClient:
 
     async def _async_token_request(self, payload: dict, label: str) -> dict:
         """POST to the LWA token endpoint and return the parsed JSON."""
-        session = await self._get_session()
+        session = await self.get_session()
         try:
             async with session.post(LWA_TOKEN_URL, data=payload) as resp:
                 data = await resp.json()
@@ -184,19 +182,3 @@ class LWAClient:
         self._tokens[scope] = entry
         if "refresh_token" in data:
             self._refresh_tokens[scope] = data["refresh_token"]
-
-        # Also store under each individual scope part so lookups by a
-        # single scope component also succeed.
-        scope_parts = scope.split()
-        for part in scope_parts:
-            if part != scope:
-                self._tokens[part] = entry
-                if "refresh_token" in data:
-                    self._refresh_tokens[part] = data["refresh_token"]
-
-        # Ensure the canonical SMAPI scope key always points to the token
-        # when the requested scope covers all SMAPI permissions.
-        if _SMAPI_SCOPE_PARTS.issubset(scope_parts):
-            self._tokens[SCOPE_SMAPI] = entry
-            if "refresh_token" in data:
-                self._refresh_tokens[SCOPE_SMAPI] = data["refresh_token"]

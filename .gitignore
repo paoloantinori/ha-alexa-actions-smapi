@@ -10,3 +10,9 @@ build/
 .venv
 dist/
 lambda_package.zip
+
+# Claude Code / local dev
+.serena/
+backlog/
+CLAUDE.md
+.claude/

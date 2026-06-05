@@ -173,8 +173,8 @@ class TestLWAClientStoreToken:
         expected_max = after + 3600 - 60
         assert expected_min <= cached.expires_at <= expected_max + 5
 
-    def test_stores_individual_scope_parts(self):
-        """When scope has multiple parts, each part gets its own cache entry."""
+    def test_stores_under_passed_scope_key(self):
+        """Token is stored under the exact scope string passed."""
         hass = MagicMock()
         client = LWAClient(hass, "cid", "csecret")
         scope = "alexa::ask:skills:readwrite alexa::ask:models:readwrite"
@@ -184,6 +184,6 @@ class TestLWAClientStoreToken:
             "expires_in": 3600,
         }
         client._store_token(scope, data)
-        # Individual parts should also be stored
-        assert "alexa::ask:skills:readwrite" in client._tokens
-        assert "alexa::ask:models:readwrite" in client._tokens
+        # Token is stored under the full scope string, not split parts
+        assert scope in client._tokens
+        assert client._tokens[scope].token == "at_parts"
