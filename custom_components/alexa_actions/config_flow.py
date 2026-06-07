@@ -1,6 +1,7 @@
 """Config flow for the Alexa Actions SMAPI integration."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from typing import Any
@@ -23,15 +24,12 @@ from homeassistant.helpers.selector import (
 from homeassistant.helpers.network import NoURLAvailableError, get_url
 
 from .api import LWAClient
-from .exceptions import AWSDeploymentError, SMAPIError
+from .exceptions import HostedSkillError, SMAPIError
+from .hosted_skill_deployer import HostedSkillDeployer
 from .const import (
-    CONF_AWS_ACCESS_KEY_ID,
-    CONF_AWS_REGION,
-    CONF_AWS_SECRET_ACCESS_KEY,
     CONF_HA_TOKEN,
     CONF_HA_URL,
     CONF_INVOCATION_NAME,
-    CONF_LAMBDA_ARN,
     CONF_LOCALES,
     CONF_REFRESH_TOKEN,
     CONF_SKILL_ID,
@@ -40,21 +38,11 @@ from .const import (
     DOMAIN,
     SCOPE_SMAPI,
 )
-from .lambda_deployer import LambdaDeployer
 from .models import LOCALE_LABELS, get_model
 from .smapi import SMAPI
 from .views import AlexaAuthCallbackView
 
 _LOGGER = logging.getLogger(__name__)
-
-_AWS_REGION_OPTIONS: list[SelectOptionDict] = [
-    SelectOptionDict(value="us-east-1", label="US East (N. Virginia)"),
-    SelectOptionDict(value="us-west-2", label="US West (Oregon)"),
-    SelectOptionDict(value="eu-west-1", label="EU (Ireland)"),
-    SelectOptionDict(value="eu-central-1", label="EU (Frankfurt)"),
-    SelectOptionDict(value="ap-southeast-1", label="Asia Pacific (Singapore)"),
-    SelectOptionDict(value="ap-northeast-1", label="Asia Pacific (Tokyo)"),
-]
 
 _LOCALE_OPTIONS: list[SelectOptionDict] = [
     SelectOptionDict(value=locale, label=label)
@@ -87,7 +75,7 @@ class AlexaActionsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Step 1: Collect LWA, AWS, and Home Assistant credentials."""
+        """Step 1: Collect LWA and Home Assistant credentials."""
         errors: dict[str, str] = {}
 
         if user_input is not None:
@@ -138,18 +126,6 @@ class AlexaActionsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 ),
                 vol.Required(CONF_CLIENT_SECRET): TextSelector(
                     TextSelectorConfig(type=TextSelectorType.PASSWORD)
-                ),
-                vol.Required(CONF_AWS_ACCESS_KEY_ID): TextSelector(
-                    TextSelectorConfig(type=TextSelectorType.TEXT)
-                ),
-                vol.Required(CONF_AWS_SECRET_ACCESS_KEY): TextSelector(
-                    TextSelectorConfig(type=TextSelectorType.PASSWORD)
-                ),
-                vol.Required(CONF_AWS_REGION): SelectSelector(
-                    SelectSelectorConfig(
-                        options=_AWS_REGION_OPTIONS,
-                        mode=SelectSelectorMode.DROPDOWN,
-                    )
                 ),
                 vol.Required(CONF_HA_URL, default=ha_url_default): TextSelector(
                     TextSelectorConfig(type=TextSelectorType.URL)
@@ -238,7 +214,7 @@ class AlexaActionsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_setup(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Step 3: Deploy Lambda and create Alexa skill via SMAPI."""
+        """Step 3: Create Alexa-hosted skill and deploy Lambda code."""
         if self._lwa_client is None:
             return await self.async_step_user()
 
@@ -247,60 +223,92 @@ class AlexaActionsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         # This step shows a progress form; actual work happens on submit.
         if user_input is not None:
             try:
-                # 1. Deploy Lambda function.
-                deployer = LambdaDeployer(
-                    self.hass,
-                    aws_access_key_id=self._user_input[CONF_AWS_ACCESS_KEY_ID],
-                    aws_secret_access_key=self._user_input[
-                        CONF_AWS_SECRET_ACCESS_KEY
-                    ],
-                    aws_region=self._user_input[CONF_AWS_REGION],
-                )
-
-                lambda_arn = await deployer.async_deploy(
-                    home_assistant_url=self._user_input[CONF_HA_URL],
-                    ha_token=self._user_input[CONF_HA_TOKEN],
-                )
-
-                _LOGGER.info("Lambda deployed: %s", lambda_arn)
-
-                # 2. Create SMAPI client and build interaction models.
                 smapi = SMAPI(self._lwa_client)
                 locales = self._user_input.get(CONF_LOCALES, _DEFAULT_LOCALES)
                 invocation_name = self._user_input.get(
                     CONF_INVOCATION_NAME, DEFAULT_SKILL_NAME
                 )
 
+                # 1. Get vendor ID.
+                vendor_id = await smapi.async_get_vendor_id()
+
+                # 2. Create hosted skill.
+                skill_id = await smapi.async_create_hosted_skill(
+                    vendor_id=vendor_id,
+                    skill_name=invocation_name,
+                    locales=locales,
+                )
+
+                # 3. Wait for Amazon to provision the Lambda.
+                await smapi.async_wait_for_hosted_provisioning(skill_id)
+
+                # 4. Build and upload interaction models.
                 models: dict[str, dict] = {}
                 for locale in locales:
                     models[locale] = get_model(locale, invocation_name)
 
-                # 3. Create skill, upload models, enable.
-                result = await smapi.async_setup_skill_complete(
-                    lambda_arn=lambda_arn,
-                    models=models,
-                    skill_name=invocation_name,
+                # Upload each model, then wait for the builds to complete.
+                upload_results = await asyncio.gather(
+                    *(
+                        smapi.async_upload_model(skill_id, locale, model)
+                        for locale, model in models.items()
+                    ),
+                    return_exceptions=True,
+                )
+                uploaded_locales = [
+                    loc
+                    for loc, result in zip(locales, upload_results)
+                    if not isinstance(result, Exception)
+                ]
+
+                if uploaded_locales:
+                    await smapi.async_wait_for_model_build(
+                        skill_id, uploaded_locales,
+                    )
+
+                # Update manifest with successfully-uploaded locales.
+                if uploaded_locales:
+                    try:
+                        await smapi.async_update_manifest(
+                            skill_id=skill_id,
+                            lambda_arn="",
+                            skill_name=invocation_name,
+                            locales=uploaded_locales,
+                        )
+                    except HomeAssistantError as err:
+                        _LOGGER.warning(
+                            "Failed to update manifest (non-fatal): %s", err,
+                        )
+
+                # 5. Enable the skill.
+                try:
+                    await smapi.async_enable_skill(skill_id)
+                except HomeAssistantError as err:
+                    _LOGGER.warning(
+                        "Failed to enable skill %s: %s", skill_id, err,
+                    )
+
+                # 6. Push Lambda code with baked config.json.
+                deployer = HostedSkillDeployer(self.hass, smapi)
+                await deployer.async_push_lambda_code(
+                    skill_id=skill_id,
+                    ha_url=self._user_input[CONF_HA_URL],
+                    ha_token=self._user_input[CONF_HA_TOKEN],
                 )
 
-                skill_id = result["skill_id"]
-                vendor_id = result["vendor_id"]
-
                 _LOGGER.info(
-                    "Skill setup complete: skill_id=%s, vendor_id=%s",
-                    skill_id,
-                    vendor_id,
+                    "Hosted skill setup complete: skill_id=%s", skill_id,
                 )
 
                 # Store results for the finish step.
                 self._user_input[CONF_SKILL_ID] = skill_id
                 self._user_input[CONF_VENDOR_ID] = vendor_id
-                self._user_input[CONF_LAMBDA_ARN] = lambda_arn
 
                 return await self.async_step_finish()
 
-            except AWSDeploymentError as err:
-                _LOGGER.error("AWS deployment failed: %s", err)
-                errors["base"] = "aws_error"
+            except HostedSkillError as err:
+                _LOGGER.error("Hosted skill deployment failed: %s", err)
+                errors["base"] = "hosted_error"
             except SMAPIError as err:
                 _LOGGER.error("SMAPI setup failed: %s", err)
                 errors["base"] = "smapi_error"
@@ -327,13 +335,6 @@ class AlexaActionsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 data={
                     CONF_CLIENT_ID: self._user_input[CONF_CLIENT_ID],
                     CONF_CLIENT_SECRET: self._user_input[CONF_CLIENT_SECRET],
-                    CONF_AWS_ACCESS_KEY_ID: self._user_input[
-                        CONF_AWS_ACCESS_KEY_ID
-                    ],
-                    CONF_AWS_SECRET_ACCESS_KEY: self._user_input[
-                        CONF_AWS_SECRET_ACCESS_KEY
-                    ],
-                    CONF_AWS_REGION: self._user_input[CONF_AWS_REGION],
                     CONF_HA_URL: self._user_input[CONF_HA_URL],
                     CONF_HA_TOKEN: self._user_input[CONF_HA_TOKEN],
                     CONF_INVOCATION_NAME: self._user_input.get(
@@ -344,7 +345,6 @@ class AlexaActionsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     ),
                     CONF_SKILL_ID: self._user_input.get(CONF_SKILL_ID, ""),
                     CONF_VENDOR_ID: self._user_input.get(CONF_VENDOR_ID, ""),
-                    CONF_LAMBDA_ARN: self._user_input.get(CONF_LAMBDA_ARN, ""),
                     CONF_REFRESH_TOKEN: self._user_input.get(
                         CONF_REFRESH_TOKEN, ""
                     ),
@@ -355,7 +355,6 @@ class AlexaActionsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             step_id="finish",
             description_placeholders={
                 "skill_id": self._user_input.get(CONF_SKILL_ID, ""),
-                "lambda_arn": self._user_input.get(CONF_LAMBDA_ARN, ""),
             },
         )
 
@@ -397,7 +396,6 @@ class AlexaActionsOptionsFlow(config_entries.OptionsFlow):
             try:
                 entry_data = self._config_entry.data
 
-                # Re-deploy Lambda with updated env vars if ha_url changed.
                 current_ha_url = entry_data.get(CONF_HA_URL, "")
                 new_ha_url = user_input.get(CONF_HA_URL, current_ha_url)
 
@@ -411,23 +409,10 @@ class AlexaActionsOptionsFlow(config_entries.OptionsFlow):
                 ha_url_changed = new_ha_url != current_ha_url
                 invocation_changed = new_invocation != current_invocation
 
-                if ha_url_changed:
-                    # Re-deploy Lambda with new HA URL.
-                    deployer = LambdaDeployer(
-                        self.hass,
-                        aws_access_key_id=entry_data[CONF_AWS_ACCESS_KEY_ID],
-                        aws_secret_access_key=entry_data[
-                            CONF_AWS_SECRET_ACCESS_KEY
-                        ],
-                        aws_region=entry_data[CONF_AWS_REGION],
-                    )
-                    await deployer.async_deploy(
-                        home_assistant_url=new_ha_url,
-                        ha_token=entry_data[CONF_HA_TOKEN],
-                    )
+                skill_id = entry_data.get(CONF_SKILL_ID, "")
 
-                if invocation_changed:
-                    # Update SMAPI manifest with new invocation name.
+                # Single LWA client for any SMAPI work needed.
+                if (ha_url_changed or invocation_changed) and skill_id:
                     lwa_client = LWAClient(
                         self.hass,
                         entry_data[CONF_CLIENT_ID],
@@ -435,25 +420,33 @@ class AlexaActionsOptionsFlow(config_entries.OptionsFlow):
                     )
                     refresh_token = entry_data.get(CONF_REFRESH_TOKEN, "")
                     if refresh_token:
-                        lwa_client.set_refresh_token(SCOPE_SMAPI, refresh_token)
-
-                    smapi = SMAPI(lwa_client)
-                    skill_id = entry_data.get(CONF_SKILL_ID, "")
-                    lambda_arn = entry_data.get(CONF_LAMBDA_ARN, "")
-                    locales = self._config_entry.options.get(
-                        CONF_LOCALES,
-                        entry_data.get(CONF_LOCALES, _DEFAULT_LOCALES),
-                    )
-
-                    if skill_id and lambda_arn:
-                        await smapi.async_update_manifest(
-                            skill_id=skill_id,
-                            lambda_arn=lambda_arn,
-                            skill_name=new_invocation,
-                            locales=locales,
+                        lwa_client.set_refresh_token(
+                            SCOPE_SMAPI, refresh_token,
                         )
 
-                    await lwa_client.async_close()
+                    smapi = SMAPI(lwa_client)
+                    try:
+                        if ha_url_changed:
+                            deployer = HostedSkillDeployer(self.hass, smapi)
+                            await deployer.async_push_lambda_code(
+                                skill_id=skill_id,
+                                ha_url=new_ha_url,
+                                ha_token=entry_data[CONF_HA_TOKEN],
+                            )
+
+                        if invocation_changed:
+                            locales = self._config_entry.options.get(
+                                CONF_LOCALES,
+                                entry_data.get(CONF_LOCALES, _DEFAULT_LOCALES),
+                            )
+                            await smapi.async_update_manifest(
+                                skill_id=skill_id,
+                                lambda_arn="",
+                                skill_name=new_invocation,
+                                locales=locales,
+                            )
+                    finally:
+                        await lwa_client.async_close()
 
                 # Update the config entry data with new values.
                 new_data = dict(entry_data)

@@ -7,9 +7,6 @@
         "data": {
           "client_id": "LWA Client ID",
           "client_secret": "LWA Client Secret",
-          "aws_access_key_id": "AWS Access Key ID",
-          "aws_secret_access_key": "AWS Secret Access Key",
-          "aws_region": "AWS Region",
           "ha_url": "Home Assistant URL",
           "ha_token": "Long-Lived Access Token",
           "invocation_name": "Skill Invocation Name",
@@ -22,18 +19,18 @@
       },
       "setup": {
         "title": "Setting up",
-        "description": "Deploying Lambda and creating Alexa skill..."
+        "description": "Creating Alexa-hosted skill and deploying code..."
       },
       "finish": {
         "title": "Setup Complete",
-        "description": "Your Alexa actionable notification skill is ready!\n\nSkill ID: `{skill_id}`\nLambda ARN: `{lambda_arn}`"
+        "description": "Your Alexa actionable notification skill is ready!\n\nSkill ID: `{skill_id}`"
       }
     },
     "error": {
       "invalid_auth": "Authorization failed. Please try again.",
       "authorization_pending": "Waiting for authorization...",
       "smapi_error": "SMAPI setup failed. Check logs for details.",
-      "aws_error": "AWS deployment failed. Check credentials and permissions.",
+      "hosted_error": "Alexa-hosted skill deployment failed. Check logs and ensure git is installed.",
       "cannot_connect": "Failed to connect to Amazon LWA.",
       "unknown": "Unexpected error occurred."
     },
@@ -45,7 +42,7 @@
     "step": {
       "init": {
         "title": "Options",
-        "description": "Update Alexa Actions settings. Changing invocation name or HA URL will redeploy Lambda and update the skill manifest.",
+        "description": "Update Alexa Actions settings. Changing invocation name or HA URL will redeploy the skill code and update the manifest.",
         "data": {
           "invocation_name": "Skill Invocation Name",
           "ha_url": "Home Assistant URL"

@@ -10,3 +10,7 @@ class AWSDeploymentError(HomeAssistantError):
 
 class SMAPIError(HomeAssistantError):
     """Raised when an Alexa SMAPI operation fails."""
+
+
+class HostedSkillError(HomeAssistantError):
+    """Raised when an Alexa-hosted skill operation fails."""

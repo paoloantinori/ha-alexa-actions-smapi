@@ -1,4 +1,8 @@
-"""SMAPI client for automated Alexa custom skill management via Lambda ARN."""
+"""SMAPI client for Alexa custom skill lifecycle management.
+
+Supports both self-hosted Lambda (via ARN) and Alexa-hosted skills
+(Amazon-provisioned Lambda with git-push deployment).
+"""
 from __future__ import annotations
 
 import asyncio
@@ -220,6 +224,127 @@ class SMAPI:
             " — no locales reached SUCCEEDED"
         )
 
+    # ------------------------------------------------------------------
+    # Alexa-hosted skill operations
+    # ------------------------------------------------------------------
+
+    async def async_create_hosted_skill(
+        self,
+        vendor_id: str,
+        skill_name: str = DEFAULT_SKILL_NAME,
+        locales: list[str] | None = None,
+    ) -> str:
+        """Create an Alexa-hosted custom skill.
+
+        Amazon auto-provisions a Lambda function and a CodeCommit git repo.
+        Returns the new skill ID.
+        """
+        manifest = self._build_manifest(
+            lambda_arn="", skill_name=skill_name, locales=locales,
+        )
+
+        data = await self._async_request(
+            "POST",
+            "/v1/skills",
+            json={
+                "vendorId": vendor_id,
+                "manifest": manifest,
+            },
+        )
+        if not isinstance(data, dict) or "skillId" not in data:
+            raise SMAPIError(
+                "Hosted skill creation did not return a skill ID"
+            )
+        skill_id = data["skillId"]
+        _LOGGER.info("Created hosted skill: %s", skill_id)
+        return skill_id
+
+    async def async_wait_for_hosted_provisioning(
+        self,
+        skill_id: str,
+        timeout: float = 120.0,
+        poll_interval: float = 5.0,
+    ) -> None:
+        """Poll until the hosted-skill Lambda has been provisioned."""
+        deadline = time.monotonic() + timeout
+
+        while time.monotonic() < deadline:
+            try:
+                data = await self.async_get_skill_status(skill_id)
+            except HomeAssistantError as err:
+                _LOGGER.warning(
+                    "Hosted provisioning poll failed (will retry): %s", err,
+                )
+                await asyncio.sleep(poll_interval)
+                continue
+
+            status = (
+                data.get("hostedSkillProvisioning", {})
+                .get("lastUpdateRequest", {})
+                .get("status", "")
+            )
+            _LOGGER.debug(
+                "Hosted skill %s provisioning status: %s", skill_id, status,
+            )
+
+            if status == "SUCCEEDED":
+                _LOGGER.info(
+                    "Hosted skill %s provisioning complete", skill_id,
+                )
+                return
+            if status == "FAILED":
+                raise SMAPIError(
+                    f"Hosted skill provisioning failed for {skill_id}"
+                )
+
+            elapsed = deadline - time.monotonic()
+            if elapsed > poll_interval:
+                await asyncio.sleep(poll_interval)
+            else:
+                break
+
+        raise SMAPIError(
+            f"Hosted skill provisioning timed out after {timeout}s"
+        )
+
+    async def async_get_hosted_repo_metadata(
+        self, skill_id: str,
+    ) -> dict:
+        """Return repo URL and runtime info for the hosted skill.
+
+        Response includes ``repositoryUrl`` and ``alexaHosted`` metadata.
+        """
+        data = await self._async_request(
+            "GET", f"/v1/skills/{skill_id}/alexaHosted",
+        )
+        if not isinstance(data, dict):
+            raise SMAPIError(
+                "Unexpected response from hosted skill metadata API"
+            )
+        return data
+
+    async def async_generate_git_credentials(
+        self, skill_id: str,
+    ) -> tuple[str, str]:
+        """Generate temporary git credentials for the hosted skill repo.
+
+        Returns (username, password) valid for ~1 hour.
+        """
+        data = await self._async_request(
+            "POST",
+            f"/v1/skills/{skill_id}"
+            f"/alexaHosted/repository/credentials/generate",
+        )
+        if not isinstance(data, dict):
+            raise SMAPIError(
+                "Unexpected response from git credentials API"
+            )
+        username = data.get("username", "")
+        password = data.get("password", "")
+        if not username or not password:
+            raise SMAPIError("Git credentials response missing fields")
+        return username, password
+
     async def async_setup_skill_complete(
         self,
         lambda_arn: str,
@@ -410,7 +535,12 @@ class SMAPI:
         skill_name: str,
         locales: list[str] | None = None,
     ) -> dict:
-        """Build the skill manifest with a Lambda ARN endpoint."""
+        """Build the skill manifest.
+
+        When *lambda_arn* is non-empty the endpoint points at the ARN
+        (self-hosted Lambda).  When empty the ``endpoint`` key is omitted
+        so the caller can use the manifest for hosted-skill provisioning.
+        """
         target = locales if locales else list(_MANIFEST_LOCALE_INFO)
         locale_manifests: dict[str, dict] = {}
         for loc in target:
@@ -420,6 +550,10 @@ class SMAPI:
                 "examplePhrases": [f"Alexa, open {skill_name}"],
                 **info,
             }
+
+        custom_api: dict = {"interfaces": []}
+        if lambda_arn:
+            custom_api["endpoint"] = {"sourceArn": lambda_arn}
 
         return {
             "publishingInformation": {
@@ -431,12 +565,7 @@ class SMAPI:
                 ),
             },
             "apis": {
-                "custom": {
-                    "endpoint": {
-                        "sourceArn": lambda_arn,
-                    },
-                    "interfaces": [],
-                }
+                "custom": custom_api,
             },
             "manifestVersion": "1.0",
         }

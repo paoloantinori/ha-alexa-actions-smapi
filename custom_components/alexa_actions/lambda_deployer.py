@@ -18,6 +18,7 @@ from botocore.exceptions import ClientError
 from homeassistant.core import HomeAssistant
 
 from .exceptions import AWSDeploymentError
+from .paths import find_lambda_dir
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -111,29 +112,11 @@ class LambdaDeployer:
     # ------------------------------------------------------------------
 
     def _find_lambda_dir(self) -> Path:
-        """Locate the lambda/ source directory.
-
-        Search order:
-        1. ``custom_components/alexa_actions/lambda/`` (bundled inside the
-           component when distributed via HACS).
-        2. ``lambda/`` relative to the custom_components root (development
-           layout where ``lambda/`` sits next to ``custom_components/``).
-        """
-        component_dir = Path(__file__).resolve().parent
-
-        # Bundled inside the custom component package.
-        bundled = component_dir / "lambda"
-        if bundled.is_dir():
-            return bundled
-
-        # Development layout: project_root/lambda/
-        dev_layout = component_dir.parent.parent.parent / "lambda"
-        if dev_layout.is_dir():
-            return dev_layout
-
-        raise AWSDeploymentError(
-            f"Lambda source directory not found. Searched: {bundled}, {dev_layout}"
-        )
+        """Locate the lambda/ source directory (delegates to shared utility)."""
+        try:
+            return find_lambda_dir()
+        except FileNotFoundError as err:
+            raise AWSDeploymentError(str(err)) from err
 
     def _install_deps(self, lambda_dir: Path, target: str) -> None:
         """Install Lambda dependencies into *target* via pip."""

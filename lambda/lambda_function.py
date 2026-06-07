@@ -3,7 +3,9 @@
 Processes Alexa actionable-notification events and forwards responses
 to a Home Assistant instance via its REST API.
 
-Configuration is read from environment variables:
+Configuration is read from environment variables when set, otherwise
+from a ``config.json`` file in the same directory as this module (used
+by Alexa-hosted skills where env vars are not configurable):
 
   HOME_ASSISTANT_URL  – Base URL of the Home Assistant instance
   VERIFY_SSL          – "true" / "false" (default "true")
@@ -50,12 +52,41 @@ from schemas import HaState, HaStateError
 from utils import get_logger, _string_to_bool
 
 # ---------------------------------------------------------------------------
-# Configuration from environment
+# Configuration from environment variables (preferred) or config.json
+# (fallback for Alexa-hosted skills where env vars are not configurable).
 # ---------------------------------------------------------------------------
-HOME_ASSISTANT_URL = os.environ.get("HOME_ASSISTANT_URL", "").rstrip("/")
-VERIFY_SSL = _string_to_bool(os.environ.get("VERIFY_SSL", "true"), default=True)
-CONFIGURED_TOKEN = os.environ.get("TOKEN", "")
-DEBUG = _string_to_bool(os.environ.get("DEBUG", "false"), default=False)
+
+
+def _load_config():
+    """Load configuration from env vars, falling back to config.json."""
+    file_config = {}
+    config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+    if os.path.exists(config_path):
+        with open(config_path, encoding="utf-8") as fh:
+            file_config = json.load(fh)
+
+    return {
+        "HOME_ASSISTANT_URL": os.environ.get(
+            "HOME_ASSISTANT_URL",
+            file_config.get("HOME_ASSISTANT_URL", ""),
+        ).rstrip("/"),
+        "VERIFY_SSL": _string_to_bool(
+            os.environ.get("VERIFY_SSL", file_config.get("VERIFY_SSL", "true")),
+            default=True,
+        ),
+        "TOKEN": os.environ.get("TOKEN", file_config.get("TOKEN", "")),
+        "DEBUG": _string_to_bool(
+            os.environ.get("DEBUG", file_config.get("DEBUG", "false")),
+            default=False,
+        ),
+    }
+
+
+_config = _load_config()
+HOME_ASSISTANT_URL = _config["HOME_ASSISTANT_URL"]
+VERIFY_SSL = _config["VERIFY_SSL"]
+CONFIGURED_TOKEN = _config["TOKEN"]
+DEBUG = _config["DEBUG"]
 
 logger = get_logger(DEBUG)
 
