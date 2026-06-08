@@ -165,24 +165,10 @@ class AlexaActionsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         errors: dict[str, str] = {}
 
-        # Build callback URL and auth URL.
-        callback_url = self._get_callback_url()
-        self._auth_state = str(uuid.uuid4())
-        auth_url = self._lwa_client.get_authorization_url(
-            redirect_uri=callback_url,
-            scope=SCOPE_SMAPI,
-            state=self._auth_state,
-        )
-
-        # Store auth URL in hass data so it's accessible.
-        self.hass.data.setdefault(DOMAIN, {})
-        self.hass.data[DOMAIN]["auth_url"] = auth_url
-        self.hass.data[DOMAIN]["callback_url"] = callback_url
-        self.hass.data[DOMAIN]["auth_state"] = self._auth_state
-
         # If user_input is provided, it means they clicked "Submit" after
-        # authorizing.  Try to find the auth code.
-        if user_input is not None:
+        # authorizing.  Try to find the auth code using the *existing* state.
+        if user_input is not None and self._auth_state:
+            callback_url = self._get_callback_url()
             auth_codes = self.hass.data.get(DOMAIN, {}).get("auth_codes", {})
             code = auth_codes.pop(self._auth_state, None)
 
@@ -202,6 +188,16 @@ class AlexaActionsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     errors["base"] = "invalid_auth"
             else:
                 errors["base"] = "authorization_pending"
+
+        # Build callback URL and auth URL (only on first display or retry).
+        callback_url = self._get_callback_url()
+        if not self._auth_state:
+            self._auth_state = str(uuid.uuid4())
+        auth_url = self._lwa_client.get_authorization_url(
+            redirect_uri=callback_url,
+            scope=SCOPE_SMAPI,
+            state=self._auth_state,
+        )
 
         return self.async_show_form(
             step_id="auth_smapi",
