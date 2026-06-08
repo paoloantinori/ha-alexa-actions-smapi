@@ -171,6 +171,7 @@ class AlexaActionsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         auth_url = self._lwa_client.get_authorization_url(
             redirect_uri=callback_url,
             scope=SCOPE_SMAPI,
+            state=self._auth_state,
         )
 
         # Store auth URL in hass data so it's accessible.

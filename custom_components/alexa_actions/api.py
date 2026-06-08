@@ -59,7 +59,9 @@ class LWAClient:
         """Clear the cached access token so the next call fetches a new one."""
         self._tokens.pop(scope, None)
 
-    def get_authorization_url(self, redirect_uri: str, scope: str) -> str:
+    def get_authorization_url(
+        self, redirect_uri: str, scope: str, state: str | None = None,
+    ) -> str:
         """Build the LWA authorization URL for the OAuth2 code flow."""
         params = {
             "client_id": self._client_id,
@@ -67,6 +69,8 @@ class LWAClient:
             "response_type": "code",
             "redirect_uri": redirect_uri,
         }
+        if state:
+            params["state"] = state
         return f"{LWA_AUTH_URL}?{urlencode(params, quote_via=quote)}"
 
     # ------------------------------------------------------------------
