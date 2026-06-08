@@ -371,11 +371,19 @@ class AlexaActionsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             pass
 
     def _get_callback_url(self) -> str:
-        """Build the full OAuth callback URL."""
-        try:
-            base_url = get_url(self.hass)
-        except NoURLAvailableError:
-            base_url = self._user_input.get(CONF_HA_URL, "")
+        """Build the full OAuth callback URL.
+
+        Prefers the URL the user explicitly entered in the form so that
+        the OAuth redirect matches what was whitelisted in the LWA security
+        profile (typically an external HTTPS URL).  Falls back to HA's
+        auto-detected URL only when no manual URL was provided.
+        """
+        base_url = self._user_input.get(CONF_HA_URL, "")
+        if not base_url:
+            try:
+                base_url = get_url(self.hass)
+            except NoURLAvailableError:
+                pass
         return f"{base_url}{_CALLBACK_PATH}"
 
 
