@@ -136,8 +136,11 @@ class SMAPI:
             if isinstance(existing, dict) and "eTag" in existing:
                 headers["If-Match"] = existing["eTag"]
         except HomeAssistantError:
-            pass
+            _LOGGER.debug(
+                "No existing model for %s (expected for new skill)", locale,
+            )
 
+        _LOGGER.info("Uploading interaction model for locale %s", locale)
         await self._async_request(
             "PUT",
             f"/v1/skills/{skill_id}/stages/development"
@@ -145,6 +148,7 @@ class SMAPI:
             json=model,
             headers=headers,
         )
+        _LOGGER.info("Model upload for locale %s accepted", locale)
 
     async def async_enable_skill(self, skill_id: str) -> None:
         """Enable the skill for the development stage."""
@@ -165,7 +169,7 @@ class SMAPI:
         self,
         skill_id: str,
         locales: list[str],
-        timeout: float = 60.0,
+        timeout: float = 180.0,
         poll_interval: float = 5.0,
     ) -> list[str]:
         """Poll skill status until at least one locale build reaches SUCCEEDED."""
@@ -181,8 +185,14 @@ class SMAPI:
                 await asyncio.sleep(poll_interval)
                 continue
 
-            locale_statuses = (
-                data.get("interactionModel", {}).get("locales", {})
+            # SMAPI returns locales directly under interactionModel
+            # (e.g. {"interactionModel": {"it-IT": {...}}}), not under a
+            # "locales" sub-key.
+            im_data = data.get("interactionModel", {})
+            locale_statuses = im_data.get("locales", im_data)
+            _LOGGER.debug(
+                "Model build status raw response: %s",
+                str(data)[:1500],
             )
             succeeded: list[str] = []
             failed: list[str] = []
@@ -211,6 +221,10 @@ class SMAPI:
 
             if succeeded:
                 return succeeded
+            if failed:
+                raise SMAPIError(
+                    f"Model build failed for locales: {failed}"
+                )
             if not pending:
                 break
             elapsed = deadline - time.monotonic()
@@ -278,11 +292,26 @@ class SMAPI:
                 await asyncio.sleep(poll_interval)
                 continue
 
+            # Log the raw provisioning structure for debugging.
+            _LOGGER.debug(
+                "Hosted skill %s status response: %s",
+                skill_id,
+                str(data)[:1000],
+            )
+
             status = (
                 data.get("hostedSkillProvisioning", {})
                 .get("lastUpdateRequest", {})
                 .get("status", "")
             )
+            # Fallback: some SMAPI versions return provisioning status
+            # under ``manifest`` instead of ``hostedSkillProvisioning``.
+            if not status:
+                status = (
+                    data.get("manifest", {})
+                    .get("lastUpdateRequest", {})
+                    .get("status", "")
+                )
             _LOGGER.debug(
                 "Hosted skill %s provisioning status: %s", skill_id, status,
             )

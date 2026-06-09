@@ -29,10 +29,10 @@
     "error": {
       "invalid_auth": "Authorization failed. Please try again.",
       "authorization_pending": "Waiting for authorization...",
-      "smapi_error": "SMAPI setup failed. Check logs for details.",
+      "smapi_error": "SMAPI setup failed. Check Home Assistant logs for details.",
       "hosted_error": "Alexa-hosted skill deployment failed. Check logs and ensure git is installed.",
       "cannot_connect": "Failed to connect to Amazon LWA.",
-      "unknown": "Unexpected error occurred."
+      "unknown": "Setup failed. Check the Home Assistant logs for the full error message."
     },
     "abort": {
       "already_configured": "This LWA Client ID is already configured."

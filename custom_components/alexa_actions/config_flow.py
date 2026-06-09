@@ -172,6 +172,15 @@ class AlexaActionsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             auth_codes = self.hass.data.get(DOMAIN, {}).get("auth_codes", {})
             code = auth_codes.pop(self._auth_state, None)
 
+            _LOGGER.debug(
+                "auth_smapi submit: state=%s, code_found=%s, "
+                "stored_states=%s, callback_url=%s",
+                self._auth_state,
+                code is not None,
+                list(auth_codes.keys()),
+                callback_url,
+            )
+
             if code:
                 try:
                     token_data = await self._lwa_client.async_exchange_code(
@@ -182,11 +191,17 @@ class AlexaActionsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     # Store refresh token for later use.
                     refresh_token = token_data.get("refresh_token", "")
                     self._user_input[CONF_REFRESH_TOKEN] = refresh_token
+                    _LOGGER.info("LWA code exchange succeeded")
                     return await self.async_step_setup()
                 except HomeAssistantError as err:
                     _LOGGER.error("LWA code exchange failed: %s", err)
                     errors["base"] = "invalid_auth"
             else:
+                _LOGGER.warning(
+                    "Auth code not found for state=%s. "
+                    "Ensure the callback URL is reachable from Amazon.",
+                    self._auth_state,
+                )
                 errors["base"] = "authorization_pending"
 
         # Build callback URL and auth URL (only on first display or retry).
@@ -201,6 +216,7 @@ class AlexaActionsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="auth_smapi",
+            data_schema=vol.Schema({}),
             description_placeholders={
                 "auth_url": auth_url,
                 "callback_url": callback_url,
@@ -227,9 +243,13 @@ class AlexaActionsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 )
 
                 # 1. Get vendor ID.
+                _LOGGER.info("Setup step 1/6: Getting vendor ID")
                 vendor_id = await smapi.async_get_vendor_id()
 
                 # 2. Create hosted skill.
+                _LOGGER.info(
+                    "Setup step 2/6: Creating hosted skill '%s'", invocation_name,
+                )
                 skill_id = await smapi.async_create_hosted_skill(
                     vendor_id=vendor_id,
                     skill_name=invocation_name,
@@ -237,9 +257,17 @@ class AlexaActionsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 )
 
                 # 3. Wait for Amazon to provision the Lambda.
+                _LOGGER.info(
+                    "Setup step 3/6: Waiting for Lambda provisioning (skill=%s)",
+                    skill_id,
+                )
                 await smapi.async_wait_for_hosted_provisioning(skill_id)
 
                 # 4. Build and upload interaction models.
+                _LOGGER.info(
+                    "Setup step 4/6: Uploading interaction models for %s",
+                    locales,
+                )
                 models: dict[str, dict] = {}
                 for locale in locales:
                     models[locale] = get_model(locale, invocation_name)
@@ -257,6 +285,19 @@ class AlexaActionsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     for loc, result in zip(locales, upload_results)
                     if not isinstance(result, Exception)
                 ]
+                failed_uploads = [
+                    (loc, str(result)[:200])
+                    for loc, result in zip(locales, upload_results)
+                    if isinstance(result, Exception)
+                ]
+                if failed_uploads:
+                    _LOGGER.warning(
+                        "Model uploads failed for: %s", failed_uploads,
+                    )
+                _LOGGER.info(
+                    "Uploaded %d/%d locales successfully: %s",
+                    len(uploaded_locales), len(locales), uploaded_locales,
+                )
 
                 if uploaded_locales:
                     await smapi.async_wait_for_model_build(
@@ -278,6 +319,7 @@ class AlexaActionsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         )
 
                 # 5. Enable the skill.
+                _LOGGER.info("Setup step 5/6: Enabling skill %s", skill_id)
                 try:
                     await smapi.async_enable_skill(skill_id)
                 except HomeAssistantError as err:
@@ -286,6 +328,10 @@ class AlexaActionsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     )
 
                 # 6. Push Lambda code with baked config.json.
+                _LOGGER.info(
+                    "Setup step 6/6: Pushing Lambda code to hosted skill %s",
+                    skill_id,
+                )
                 deployer = HostedSkillDeployer(self.hass, smapi)
                 await deployer.async_push_lambda_code(
                     skill_id=skill_id,
@@ -318,6 +364,7 @@ class AlexaActionsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="setup",
+            data_schema=vol.Schema({}),
             errors=errors,
         )
 

@@ -44,6 +44,11 @@ class AlexaAuthCallbackView(HomeAssistantView):
             )
 
         if not code or not state:
+            _LOGGER.warning(
+                "LWA auth callback missing params: code=%s, state=%s",
+                "present" if code else "MISSING",
+                "present" if state else "MISSING",
+            )
             return web.Response(
                 text="<html><body><h2>Missing parameters.</h2>"
                 "<p>Required parameters code and/or state are missing.</p>"
@@ -56,6 +61,9 @@ class AlexaAuthCallbackView(HomeAssistantView):
         self._hass.data.setdefault(DOMAIN, {}).setdefault("auth_codes", {})[
             state
         ] = code
+        _LOGGER.info(
+            "LWA auth callback stored code for state=%s", state,
+        )
 
         return web.Response(
             text="<html><body><h2>Authorization successful!</h2>"
