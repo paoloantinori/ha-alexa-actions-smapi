@@ -24,3 +24,14 @@ CONF_AWS_REGION = "aws_region"
 
 SERVICE_SEND = "send"
 INPUT_TEXT_ENTITY = "input_text.alexa_actionable_notification"
+EVENT_ALEXA_ACTIONABLE_NOTIFICATION = "alexa_actionable_notification"
+
+# Response type constants (used by skill_handler and __init__)
+RESPONSE_YES = "ResponseYes"
+RESPONSE_NO = "ResponseNo"
+RESPONSE_NONE = "ResponseNone"
+RESPONSE_SELECT = "ResponseSelect"
+RESPONSE_NUMERIC = "ResponseNumeric"
+RESPONSE_DURATION = "ResponseDuration"
+RESPONSE_STRING = "ResponseString"
+RESPONSE_DATE_TIME = "ResponseDateTime"

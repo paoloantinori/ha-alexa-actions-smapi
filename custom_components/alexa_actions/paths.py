@@ -19,7 +19,7 @@ def find_lambda_dir() -> Path:
     if bundled.is_dir():
         return bundled
 
-    dev_layout = _COMPONENT_DIR.parent.parent.parent / "lambda"
+    dev_layout = _COMPONENT_DIR.parent.parent / "lambda"
     if dev_layout.is_dir():
         return dev_layout
 

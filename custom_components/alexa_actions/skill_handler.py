@@ -12,44 +12,38 @@ from __future__ import annotations
 import json
 import logging
 import re
-from pathlib import Path
 from typing import Any
 
 from homeassistant.core import HomeAssistant
 
+from .const import (
+    EVENT_ALEXA_ACTIONABLE_NOTIFICATION,
+    INPUT_TEXT_ENTITY,
+    RESPONSE_DATE_TIME,
+    RESPONSE_DURATION,
+    RESPONSE_NO,
+    RESPONSE_NONE,
+    RESPONSE_NUMERIC,
+    RESPONSE_SELECT,
+    RESPONSE_STRING,
+    RESPONSE_YES,
+)
+from .paths import find_lambda_dir
+
 _LOGGER = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Lambda module loading (lazy, absolute paths, zero ask_sdk deps)
+# Lambda module loading (lazy, zero ask_sdk deps)
 # ---------------------------------------------------------------------------
 
-_lambda_dir: Path | None = None
 _language_strings: dict[str, dict[str, str]] | None = None
 
 # Prompt key constants (inlined from lambda/prompts.py to avoid import dance)
-ERROR_401 = "ERROR_401"
-ERROR_404 = "ERROR_404"
-ERROR_400 = "ERROR_400"
 ERROR_ACOUSTIC = "ERROR_ACOUSTIC"
 ERROR_CONFIG = "ERROR_CONFIG"
-HELP_MESSAGE = "HELP_MESSAGE"
 OKAY = "OKAY"
-STRING = "STRING"
 SELECTED = "SELECTED"
-SKILL_NAME = "SKILL_NAME"
 STOP_MESSAGE = "STOP_MESSAGE"
-WELCOME_MESSAGE = "WELCOME_MESSAGE"
-
-# Response type constants (inlined from lambda/const.py)
-INPUT_TEXT_ENTITY = "input_text.alexa_actionable_notification"
-RESPONSE_YES = "ResponseYes"
-RESPONSE_NO = "ResponseNo"
-RESPONSE_NONE = "ResponseNone"
-RESPONSE_SELECT = "ResponseSelect"
-RESPONSE_NUMERIC = "ResponseNumeric"
-RESPONSE_DURATION = "ResponseDuration"
-RESPONSE_STRING = "ResponseString"
-RESPONSE_DATE_TIME = "ResponseDateTime"
 
 
 class HaState:
@@ -82,41 +76,37 @@ def _string_to_bool(value: Any, default: bool = False) -> bool:
     return default
 
 
-def _find_lambda_dir() -> Path:
-    """Locate the lambda/ directory (cached)."""
-    global _lambda_dir
-    if _lambda_dir is not None:
-        return _lambda_dir
-    # Same search order as paths.py but without importing it.
-    component_dir = Path(__file__).resolve().parent
-    bundled = component_dir / "lambda"
-    if bundled.is_dir():
-        _lambda_dir = bundled
-        return _lambda_dir
-    dev_layout = component_dir.parent.parent / "lambda"
-    if dev_layout.is_dir():
-        _lambda_dir = dev_layout
-        return _lambda_dir
-    raise FileNotFoundError(f"Lambda source directory not found. Searched: {bundled}, {dev_layout}")
-
-
 def _load_language_strings() -> dict[str, dict[str, str]]:
     """Load language_strings.json from the lambda/ directory (cached)."""
     global _language_strings
     if _language_strings is None:
-        path = _find_lambda_dir() / "language_strings.json"
+        lambda_dir = find_lambda_dir()
+        path = lambda_dir / "language_strings.json"
         with open(path, encoding="utf-8") as fh:
-            _language_strings = json.load(fh)
+            raw = json.load(fh)
+            # Pre-compute merged locale strings (two-tier: language prefix + exact).
+            merged: dict[str, dict[str, str]] = {}
+            for key, strings in raw.items():
+                base = key[:2]
+                # Start with language-prefix base (e.g. "en" from "en-US").
+                if base not in merged:
+                    merged[base] = dict(strings)
+                else:
+                    merged[base].update(strings)
+                # Then overlay the exact locale on top.
+                if key != base:
+                    merged[key] = dict(merged[base])
+                    merged[key].update(strings)
+                elif key not in merged:
+                    merged[key] = dict(strings)
+            _language_strings = merged
     return _language_strings
 
 
 def _get_locale_strings(locale: str) -> dict[str, str]:
-    """Resolve locale-specific strings (two-tier: language prefix then exact)."""
+    """Resolve locale-specific strings (pre-computed at load time)."""
     all_strings = _load_language_strings()
-    data: dict[str, str] = dict(all_strings.get(locale[:2], {}))
-    if locale in all_strings:
-        data.update(all_strings[locale])
-    return data
+    return all_strings.get(locale) or all_strings.get(locale[:2], {})
 
 
 # ---------------------------------------------------------------------------
@@ -224,7 +214,7 @@ def _post_ha_event(
     if person_id:
         body["event_person_id"] = person_id
 
-    hass.bus.async_fire("alexa_actionable_notification", body)
+    hass.bus.async_fire(EVENT_ALEXA_ACTIONABLE_NOTIFICATION, body)
 
     if not ha_state.suppress_confirmation:
         return locale_strings.get(OKAY, "Okay")
@@ -268,22 +258,21 @@ async def _handle_launch(hass: HomeAssistant, body: dict, ls: dict) -> dict:
     return _build_response(speak_output=ha_state.text)
 
 
-async def _handle_yes(hass: HomeAssistant, body: dict, ls: dict) -> dict:
-    """AMAZON.YesIntent — fire ResponseYes event."""
-    ha_state = _get_ha_state(hass)
-    if not ha_state:
-        return _build_response()
-    speak = _post_ha_event(hass, ha_state, RESPONSE_YES, RESPONSE_YES, ls, body)
-    return _build_response(speak_output=speak)
+def _make_simple_response_handler(response_const: str):
+    """Create a handler that reads state, posts an event, and responds."""
+
+    async def _handler(hass: HomeAssistant, body: dict, ls: dict) -> dict:
+        ha_state = _get_ha_state(hass)
+        if not ha_state:
+            return _build_response()
+        speak = _post_ha_event(hass, ha_state, response_const, response_const, ls, body)
+        return _build_response(speak_output=speak)
+
+    return _handler
 
 
-async def _handle_no(hass: HomeAssistant, body: dict, ls: dict) -> dict:
-    """AMAZON.NoIntent — fire ResponseNo event."""
-    ha_state = _get_ha_state(hass)
-    if not ha_state:
-        return _build_response()
-    speak = _post_ha_event(hass, ha_state, RESPONSE_NO, RESPONSE_NO, ls, body)
-    return _build_response(speak_output=speak)
+_handle_yes = _make_simple_response_handler(RESPONSE_YES)
+_handle_no = _make_simple_response_handler(RESPONSE_NO)
 
 
 async def _handle_number(hass: HomeAssistant, body: dict, ls: dict) -> dict:

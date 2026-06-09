@@ -1,7 +1,6 @@
 """Config flow for the Alexa Actions SMAPI integration."""
 from __future__ import annotations
 
-import asyncio
 import logging
 import uuid
 from typing import Any
@@ -257,11 +256,11 @@ class AlexaActionsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 )
 
                 # 1. Get vendor ID.
-                _LOGGER.info("Setup step 1/6: Getting vendor ID")
+                _LOGGER.info("Setup step 1/3: Getting vendor ID")
                 vendor_id = await smapi.async_get_vendor_id()
 
                 # 2. Deploy Lambda to AWS.
-                _LOGGER.info("Setup step 2/6: Deploying Lambda to AWS")
+                _LOGGER.info("Setup step 2/3: Deploying Lambda to AWS")
                 deployer = LambdaDeployer(
                     self.hass,
                     aws_access_key_id=self._user_input[CONF_AWS_ACCESS_KEY_ID],
@@ -274,78 +273,18 @@ class AlexaActionsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 )
                 _LOGGER.info("Lambda deployed: %s", lambda_arn)
 
-                # 3. Create or reuse the skill with the Lambda ARN.
+                # 3. Create skill, upload models, update manifest, enable.
                 _LOGGER.info(
-                    "Setup step 3/6: Creating skill '%s' with endpoint %s",
+                    "Setup step 3/3: Creating skill '%s' with endpoint %s",
                     invocation_name, lambda_arn,
                 )
-                skill_id = await smapi.async_setup_skill_complete(
+                models = {loc: get_model(loc, invocation_name) for loc in locales}
+                setup_result = await smapi.async_setup_skill_complete(
                     lambda_arn=lambda_arn,
-                    models={loc: get_model(loc, invocation_name) for loc in locales},
+                    models=models,
                     skill_name=invocation_name,
-                )["skill_id"]
-
-                # 4. Upload interaction models and wait for build.
-                _LOGGER.info(
-                    "Setup step 4/6: Uploading interaction models for %s",
-                    locales,
                 )
-                models: dict[str, dict] = {}
-                for locale in locales:
-                    models[locale] = get_model(locale, invocation_name)
-
-                upload_results = await asyncio.gather(
-                    *(
-                        smapi.async_upload_model(skill_id, locale, model)
-                        for locale, model in models.items()
-                    ),
-                    return_exceptions=True,
-                )
-                uploaded_locales = [
-                    loc
-                    for loc, result in zip(locales, upload_results)
-                    if not isinstance(result, Exception)
-                ]
-                failed_uploads = [
-                    (loc, str(result)[:200])
-                    for loc, result in zip(locales, upload_results)
-                    if isinstance(result, Exception)
-                ]
-                if failed_uploads:
-                    _LOGGER.warning(
-                        "Model uploads failed for: %s", failed_uploads,
-                    )
-                _LOGGER.info(
-                    "Uploaded %d/%d locales successfully: %s",
-                    len(uploaded_locales), len(locales), uploaded_locales,
-                )
-
-                if uploaded_locales:
-                    await smapi.async_wait_for_model_build(
-                        skill_id, uploaded_locales,
-                    )
-
-                # 5. Update manifest with Lambda ARN.
-                _LOGGER.info(
-                    "Setup step 5/6: Updating manifest with Lambda ARN",
-                )
-                await smapi.async_update_manifest(
-                    skill_id=skill_id,
-                    lambda_arn=lambda_arn,
-                    skill_name=invocation_name,
-                    locales=uploaded_locales or locales,
-                )
-
-                # 6. Enable the skill.
-                _LOGGER.info("Setup step 6/6: Enabling skill %s", skill_id)
-                try:
-                    await smapi.async_enable_skill(skill_id)
-                except HomeAssistantError as err:
-                    _LOGGER.warning(
-                        "Failed to enable skill %s (may need manual enable"
-                        " in Alexa Developer Console): %s",
-                        skill_id, err,
-                    )
+                skill_id = setup_result["skill_id"]
 
                 _LOGGER.info(
                     "Skill setup complete: skill_id=%s, lambda_arn=%s",
