@@ -112,16 +112,22 @@ class TestGetModel:
             for i in model["interactionModel"]["languageModel"]["intents"]
         }
         assert "slots" in intents["String"]
-        assert intents["String"]["slots"][0]["type"] == "AMAZON.SearchQuery"
+        assert intents["String"]["slots"][0]["type"] == "AMAZON.Person"
         assert intents["String"]["slots"][0]["name"] == "Strings"
 
-    def test_select_intent_has_search_query_slot(self):
+    def test_select_intent_has_selections_slot(self):
         model = get_model("en-US", "test")
         intents = {
             i["name"]: i
             for i in model["interactionModel"]["languageModel"]["intents"]
         }
-        assert intents["Select"]["slots"][0]["type"] == "AMAZON.SearchQuery"
+        assert intents["Select"]["slots"][0]["type"] == "Selections"
+
+    def test_select_slot_type_has_values(self):
+        model = get_model("en-US", "test")
+        types = model["interactionModel"]["languageModel"]["types"]
+        selections = next(t for t in types if t["name"] == "Selections")
+        assert len(selections["values"]) > 0
 
     def test_number_intent_has_number_slot(self):
         model = get_model("en-US", "test")
@@ -129,7 +135,7 @@ class TestGetModel:
             i["name"]: i
             for i in model["interactionModel"]["languageModel"]["intents"]
         }
-        assert intents["Number"]["slots"][0]["type"] == "AMAZON.Number"
+        assert intents["Number"]["slots"][0]["type"] == "AMAZON.NUMBER"
 
     def test_duration_intent_has_duration_slot(self):
         model = get_model("en-US", "test")
@@ -137,7 +143,7 @@ class TestGetModel:
             i["name"]: i
             for i in model["interactionModel"]["languageModel"]["intents"]
         }
-        assert intents["Duration"]["slots"][0]["type"] == "AMAZON.Duration"
+        assert intents["Duration"]["slots"][0]["type"] == "AMAZON.DURATION"
 
     def test_date_intent_has_date_and_time_slots(self):
         model = get_model("en-US", "test")

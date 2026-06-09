@@ -241,6 +241,18 @@ def get_model(locale: str, invocation_name: str) -> dict:
             "languageModel": {
                 "invocationName": invocation,
                 "intents": _build_intents(locale_data),
+                "types": [
+                    {
+                        "name": "Selections",
+                        "values": [
+                            {"name": {"value": "Option One"}},
+                            {"name": {"value": "Option Two"}},
+                            {"name": {"value": "Option Three"}},
+                            {"name": {"value": "Yes"}},
+                            {"name": {"value": "No"}},
+                        ],
+                    }
+                ],
             }
         }
     }
@@ -254,38 +266,38 @@ def _build_intents(locale_data: dict[str, str | list[str]]) -> list[dict]:
     for name in _BUILTIN_INTENTS:
         intents.append({"name": name, "samples": []})
 
-    # String intent with AMAZON.SearchQuery slot
+    # String intent with AMAZON.Person slot (matches reference implementation)
     intents.append(
         {
             "name": "String",
-            "slots": [{"name": "Strings", "type": "AMAZON.SearchQuery"}],
+            "slots": [{"name": "Strings", "type": "AMAZON.Person"}],
             "samples": locale_data.get("string_samples", []),
         }
     )
 
-    # Select intent with AMAZON.SearchQuery slot
+    # Select intent with custom Selections slot type (values defined in types array)
     intents.append(
         {
             "name": "Select",
-            "slots": [{"name": "Selections", "type": "AMAZON.SearchQuery"}],
+            "slots": [{"name": "Selections", "type": "Selections"}],
             "samples": locale_data.get("select_samples", []),
         }
     )
 
-    # Number intent with AMAZON.Number slot
+    # Number intent with AMAZON.NUMBER slot (must be ALL CAPS for SMAPI)
     intents.append(
         {
             "name": "Number",
-            "slots": [{"name": "Numbers", "type": "AMAZON.Number"}],
+            "slots": [{"name": "Numbers", "type": "AMAZON.NUMBER"}],
             "samples": locale_data.get("number_samples", []),
         }
     )
 
-    # Duration intent with AMAZON.Duration slot
+    # Duration intent with AMAZON.DURATION slot (must be ALL CAPS for SMAPI)
     intents.append(
         {
             "name": "Duration",
-            "slots": [{"name": "Durations", "type": "AMAZON.Duration"}],
+            "slots": [{"name": "Durations", "type": "AMAZON.DURATION"}],
             "samples": locale_data.get("duration_samples", []),
         }
     )

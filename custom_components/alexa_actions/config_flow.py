@@ -24,9 +24,12 @@ from homeassistant.helpers.selector import (
 from homeassistant.helpers.network import NoURLAvailableError, get_url
 
 from .api import LWAClient
-from .exceptions import HostedSkillError, SMAPIError
-from .hosted_skill_deployer import HostedSkillDeployer
+from .exceptions import AWSDeploymentError, SMAPIError
+from .lambda_deployer import LambdaDeployer
 from .const import (
+    CONF_AWS_ACCESS_KEY_ID,
+    CONF_AWS_REGION,
+    CONF_AWS_SECRET_ACCESS_KEY,
     CONF_HA_TOKEN,
     CONF_HA_URL,
     CONF_INVOCATION_NAME,
@@ -75,7 +78,7 @@ class AlexaActionsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Step 1: Collect LWA and Home Assistant credentials."""
+        """Step 1: Collect LWA, AWS, and Home Assistant credentials."""
         errors: dict[str, str] = {}
 
         if user_input is not None:
@@ -126,6 +129,17 @@ class AlexaActionsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 ),
                 vol.Required(CONF_CLIENT_SECRET): TextSelector(
                     TextSelectorConfig(type=TextSelectorType.PASSWORD)
+                ),
+                vol.Required(CONF_AWS_ACCESS_KEY_ID): TextSelector(
+                    TextSelectorConfig(type=TextSelectorType.TEXT)
+                ),
+                vol.Required(CONF_AWS_SECRET_ACCESS_KEY): TextSelector(
+                    TextSelectorConfig(type=TextSelectorType.PASSWORD)
+                ),
+                vol.Optional(
+                    CONF_AWS_REGION, default="us-east-1"
+                ): TextSelector(
+                    TextSelectorConfig(type=TextSelectorType.TEXT)
                 ),
                 vol.Required(CONF_HA_URL, default=ha_url_default): TextSelector(
                     TextSelectorConfig(type=TextSelectorType.URL)
@@ -227,7 +241,7 @@ class AlexaActionsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_setup(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Step 3: Create Alexa-hosted skill and deploy Lambda code."""
+        """Step 3: Create skill, deploy Lambda, configure everything."""
         if self._lwa_client is None:
             return await self.async_step_user()
 
@@ -246,24 +260,32 @@ class AlexaActionsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 _LOGGER.info("Setup step 1/6: Getting vendor ID")
                 vendor_id = await smapi.async_get_vendor_id()
 
-                # 2. Create hosted skill.
-                _LOGGER.info(
-                    "Setup step 2/6: Creating hosted skill '%s'", invocation_name,
+                # 2. Deploy Lambda to AWS.
+                _LOGGER.info("Setup step 2/6: Deploying Lambda to AWS")
+                deployer = LambdaDeployer(
+                    self.hass,
+                    aws_access_key_id=self._user_input[CONF_AWS_ACCESS_KEY_ID],
+                    aws_secret_access_key=self._user_input[CONF_AWS_SECRET_ACCESS_KEY],
+                    aws_region=self._user_input.get(CONF_AWS_REGION, "us-east-1"),
                 )
-                skill_id = await smapi.async_create_hosted_skill(
-                    vendor_id=vendor_id,
+                lambda_arn = await deployer.async_deploy(
+                    home_assistant_url=self._user_input[CONF_HA_URL],
+                    ha_token=self._user_input[CONF_HA_TOKEN],
+                )
+                _LOGGER.info("Lambda deployed: %s", lambda_arn)
+
+                # 3. Create or reuse the skill with the Lambda ARN.
+                _LOGGER.info(
+                    "Setup step 3/6: Creating skill '%s' with endpoint %s",
+                    invocation_name, lambda_arn,
+                )
+                skill_id = await smapi.async_setup_skill_complete(
+                    lambda_arn=lambda_arn,
+                    models={loc: get_model(loc, invocation_name) for loc in locales},
                     skill_name=invocation_name,
-                    locales=locales,
-                )
+                )["skill_id"]
 
-                # 3. Wait for Amazon to provision the Lambda.
-                _LOGGER.info(
-                    "Setup step 3/6: Waiting for Lambda provisioning (skill=%s)",
-                    skill_id,
-                )
-                await smapi.async_wait_for_hosted_provisioning(skill_id)
-
-                # 4. Build and upload interaction models.
+                # 4. Upload interaction models and wait for build.
                 _LOGGER.info(
                     "Setup step 4/6: Uploading interaction models for %s",
                     locales,
@@ -272,7 +294,6 @@ class AlexaActionsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 for locale in locales:
                     models[locale] = get_model(locale, invocation_name)
 
-                # Upload each model, then wait for the builds to complete.
                 upload_results = await asyncio.gather(
                     *(
                         smapi.async_upload_model(skill_id, locale, model)
@@ -304,43 +325,31 @@ class AlexaActionsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         skill_id, uploaded_locales,
                     )
 
-                # Update manifest with successfully-uploaded locales.
-                if uploaded_locales:
-                    try:
-                        await smapi.async_update_manifest(
-                            skill_id=skill_id,
-                            lambda_arn="",
-                            skill_name=invocation_name,
-                            locales=uploaded_locales,
-                        )
-                    except HomeAssistantError as err:
-                        _LOGGER.warning(
-                            "Failed to update manifest (non-fatal): %s", err,
-                        )
+                # 5. Update manifest with Lambda ARN.
+                _LOGGER.info(
+                    "Setup step 5/6: Updating manifest with Lambda ARN",
+                )
+                await smapi.async_update_manifest(
+                    skill_id=skill_id,
+                    lambda_arn=lambda_arn,
+                    skill_name=invocation_name,
+                    locales=uploaded_locales or locales,
+                )
 
-                # 5. Enable the skill.
-                _LOGGER.info("Setup step 5/6: Enabling skill %s", skill_id)
+                # 6. Enable the skill.
+                _LOGGER.info("Setup step 6/6: Enabling skill %s", skill_id)
                 try:
                     await smapi.async_enable_skill(skill_id)
                 except HomeAssistantError as err:
                     _LOGGER.warning(
-                        "Failed to enable skill %s: %s", skill_id, err,
+                        "Failed to enable skill %s (may need manual enable"
+                        " in Alexa Developer Console): %s",
+                        skill_id, err,
                     )
 
-                # 6. Push Lambda code with baked config.json.
                 _LOGGER.info(
-                    "Setup step 6/6: Pushing Lambda code to hosted skill %s",
-                    skill_id,
-                )
-                deployer = HostedSkillDeployer(self.hass, smapi)
-                await deployer.async_push_lambda_code(
-                    skill_id=skill_id,
-                    ha_url=self._user_input[CONF_HA_URL],
-                    ha_token=self._user_input[CONF_HA_TOKEN],
-                )
-
-                _LOGGER.info(
-                    "Hosted skill setup complete: skill_id=%s", skill_id,
+                    "Skill setup complete: skill_id=%s, lambda_arn=%s",
+                    skill_id, lambda_arn,
                 )
 
                 # Store results for the finish step.
@@ -349,8 +358,8 @@ class AlexaActionsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
                 return await self.async_step_finish()
 
-            except HostedSkillError as err:
-                _LOGGER.error("Hosted skill deployment failed: %s", err)
+            except AWSDeploymentError as err:
+                _LOGGER.error("AWS deployment failed: %s", err)
                 errors["base"] = "hosted_error"
             except SMAPIError as err:
                 _LOGGER.error("SMAPI setup failed: %s", err)
@@ -379,6 +388,13 @@ class AlexaActionsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 data={
                     CONF_CLIENT_ID: self._user_input[CONF_CLIENT_ID],
                     CONF_CLIENT_SECRET: self._user_input[CONF_CLIENT_SECRET],
+                    CONF_AWS_ACCESS_KEY_ID: self._user_input.get(
+                        CONF_AWS_ACCESS_KEY_ID, ""
+                    ),
+                    CONF_AWS_SECRET_ACCESS_KEY: self._user_input.get(
+                        CONF_AWS_SECRET_ACCESS_KEY, ""
+                    ),
+                    CONF_AWS_REGION: self._user_input.get(CONF_AWS_REGION, "us-east-1"),
                     CONF_HA_URL: self._user_input[CONF_HA_URL],
                     CONF_HA_TOKEN: self._user_input[CONF_HA_TOKEN],
                     CONF_INVOCATION_NAME: self._user_input.get(
@@ -479,10 +495,21 @@ class AlexaActionsOptionsFlow(config_entries.OptionsFlow):
                     smapi = SMAPI(lwa_client)
                     try:
                         if ha_url_changed:
-                            deployer = HostedSkillDeployer(self.hass, smapi)
-                            await deployer.async_push_lambda_code(
-                                skill_id=skill_id,
-                                ha_url=new_ha_url,
+                            # Redeploy Lambda with new HA URL.
+                            deployer = LambdaDeployer(
+                                self.hass,
+                                aws_access_key_id=entry_data.get(
+                                    CONF_AWS_ACCESS_KEY_ID, ""
+                                ),
+                                aws_secret_access_key=entry_data.get(
+                                    CONF_AWS_SECRET_ACCESS_KEY, ""
+                                ),
+                                aws_region=entry_data.get(
+                                    CONF_AWS_REGION, "us-east-1"
+                                ),
+                            )
+                            await deployer.async_deploy(
+                                home_assistant_url=new_ha_url,
                                 ha_token=entry_data[CONF_HA_TOKEN],
                             )
 

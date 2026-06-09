@@ -248,9 +248,14 @@ class SMAPI:
         skill_name: str = DEFAULT_SKILL_NAME,
         locales: list[str] | None = None,
     ) -> str:
-        """Create an Alexa-hosted custom skill.
+        """Create an Alexa-hosted custom skill via SMAPI.
 
-        Amazon auto-provisions a Lambda function and a CodeCommit git repo.
+        Note: The SMAPI REST API creates a self-hosted custom skill.
+        Alexa-hosted skills (with auto-provisioned Lambda + CodeCommit
+        repo) can only be created through the Alexa Developer Console or
+        the ask-cli.  This method creates a custom skill that can be
+        linked to an existing hosted skill by skill_id.
+
         Returns the new skill ID.
         """
         manifest = self._build_manifest(
