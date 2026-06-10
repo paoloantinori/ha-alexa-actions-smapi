@@ -605,7 +605,10 @@ class SMAPI:
 
         custom_api: dict = {"interfaces": []}
         if endpoint_uri:
-            custom_api["endpoint"] = {"uri": endpoint_uri}
+            custom_api["endpoint"] = {
+                "uri": endpoint_uri,
+                "sslCertificateType": "Trusted",
+            }
         elif lambda_arn:
             custom_api["endpoint"] = {"sourceArn": lambda_arn}
 
