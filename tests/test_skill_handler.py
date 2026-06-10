@@ -28,11 +28,28 @@ class _MockHA:
 
 
 _ha.HomeAssistant = _MockHA
+_ha.ServiceCall = MagicMock
+_ha.callback = lambda f: f  # passthrough decorator
+_ha.ConfigEntry = MagicMock
+_ha.exceptions = MagicMock()
 sys.modules["homeassistant"] = _ha
 
 _ha_core = types.ModuleType("homeassistant.core")
 _ha_core.HomeAssistant = _MockHA
+_ha_core.ServiceCall = MagicMock
+_ha_core.callback = lambda f: f  # passthrough decorator
 sys.modules["homeassistant.core"] = _ha_core
+
+# Ensure other HA submodules that __init__.py imports are available.
+for _mod_name in (
+    "homeassistant.config_entries",
+    "homeassistant.exceptions",
+    "homeassistant.const",
+):
+    sys.modules.setdefault(_mod_name, MagicMock())
+
+# voluptuous is imported by __init__.py for SERVICE_SEND_SCHEMA.
+sys.modules.setdefault("voluptuous", MagicMock())
 
 # Now import the module under test.
 from custom_components.alexa_actions import skill_handler as sh
@@ -97,6 +114,40 @@ class TestBuildResponse:
         assert r["response"]["outputSpeech"]["text"] == "Hello"
         assert r["response"]["reprompt"]["outputSpeech"]["text"] == "Try again"
         assert r["response"]["shouldEndSession"] is False
+
+    def test_ssml_speak_output(self):
+        ssml = "<speak>Paolo<break time='1s'/>hai preso la pastiglia?</speak>"
+        r = sh._build_response(speak_output=ssml)
+        assert r["response"]["outputSpeech"]["type"] == "SSML"
+        assert r["response"]["outputSpeech"]["ssml"] == ssml
+        assert "text" not in r["response"]["outputSpeech"]
+
+    def test_ssml_with_leading_whitespace(self):
+        ssml = "  \n  <speak>Hello</speak>"
+        r = sh._build_response(speak_output=ssml)
+        assert r["response"]["outputSpeech"]["type"] == "SSML"
+        assert r["response"]["outputSpeech"]["ssml"] == ssml
+
+    def test_plain_text_unchanged(self):
+        r = sh._build_response(speak_output="Normal text")
+        assert r["response"]["outputSpeech"]["type"] == "PlainText"
+        assert r["response"]["outputSpeech"]["text"] == "Normal text"
+        assert "ssml" not in r["response"]["outputSpeech"]
+
+    def test_ssml_reprompt(self):
+        ssml = "<speak>Try again<break time='500ms'/></speak>"
+        r = sh._build_response(speak_output="Hello", reprompt=ssml, should_end_session=False)
+        assert r["response"]["outputSpeech"]["type"] == "PlainText"
+        assert r["response"]["reprompt"]["outputSpeech"]["type"] == "SSML"
+        assert r["response"]["reprompt"]["outputSpeech"]["ssml"] == ssml
+
+    def test_mixed_ssml_speak_plain_reprompt(self):
+        ssml = "<speak>Question<break time='1s'/></speak>"
+        r = sh._build_response(speak_output=ssml, reprompt="Try again", should_end_session=False)
+        assert r["response"]["outputSpeech"]["type"] == "SSML"
+        assert r["response"]["outputSpeech"]["ssml"] == ssml
+        assert r["response"]["reprompt"]["outputSpeech"]["type"] == "PlainText"
+        assert r["response"]["reprompt"]["outputSpeech"]["text"] == "Try again"
 
 
 # ---------------------------------------------------------------------------
@@ -252,6 +303,14 @@ class TestHandleLaunch:
         r = await sh.handle_alexa_request(hass, _launch_request())
         # Should return empty response (no text to speak)
         assert "outputSpeech" not in r["response"]
+
+    @pytest.mark.asyncio
+    async def test_ssml_notification_text(self):
+        ssml = "<speak>Paolo<break time='1s'/>hai preso la pastiglia?</speak>"
+        hass = _make_ha({"event": "evt1", "text": ssml, "suppress_confirmation": False})
+        r = await sh.handle_alexa_request(hass, _launch_request())
+        assert r["response"]["outputSpeech"]["type"] == "SSML"
+        assert r["response"]["outputSpeech"]["ssml"] == ssml
 
 
 class TestHandleYes:

@@ -226,6 +226,18 @@ def _post_ha_event(
 # ---------------------------------------------------------------------------
 
 
+def _is_ssml(text: str) -> bool:
+    """Return True if *text* starts with ``<speak>`` after stripping whitespace."""
+    return text.lstrip().startswith("<speak>")
+
+
+def _build_speech(text: str) -> dict:
+    """Return an Alexa outputSpeech dict, using SSML or PlainText as appropriate."""
+    if _is_ssml(text):
+        return {"type": "SSML", "ssml": text}
+    return {"type": "PlainText", "text": text}
+
+
 def _build_response(
     speak_output: str | None = None,
     reprompt: str | None = None,
@@ -234,9 +246,9 @@ def _build_response(
     """Build a standard Alexa skill response JSON envelope."""
     response: dict[str, Any] = {}
     if speak_output:
-        response["outputSpeech"] = {"type": "PlainText", "text": speak_output}
+        response["outputSpeech"] = _build_speech(speak_output)
     if reprompt:
-        response["reprompt"] = {"outputSpeech": {"type": "PlainText", "text": reprompt}}
+        response["reprompt"] = {"outputSpeech": _build_speech(reprompt)}
     response["shouldEndSession"] = should_end_session
     return {"version": "1.0", "response": response}
 
