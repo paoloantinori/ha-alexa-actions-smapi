@@ -1,5 +1,6 @@
 """Shared fixtures and module mocks for the test suite."""
 
+import types
 import sys
 from unittest.mock import MagicMock
 
@@ -8,6 +9,15 @@ from unittest.mock import MagicMock
 # environment.  Using setdefault so that a real installation is not
 # overwritten if it happens to be present.
 # ---------------------------------------------------------------------------
+
+# AbortFlow is an Exception subclass used by config_flow — must be a real
+# class on a real module for ``from ... import AbortFlow`` to work.
+class _MockAbortFlow(Exception):
+    pass
+
+_mock_data_flow = types.ModuleType("homeassistant.data_entry_flow")
+_mock_data_flow.AbortFlow = _MockAbortFlow
+_mock_data_flow.FlowResult = MagicMock
 
 _mock_modules = {
     # ask-sdk (Lambda-side)
@@ -26,7 +36,7 @@ _mock_modules = {
     "homeassistant.exceptions": MagicMock(),
     "homeassistant.config_entries": MagicMock(),
     "homeassistant.const": MagicMock(),
-    "homeassistant.data_entry_flow": MagicMock(),
+    "homeassistant.data_entry_flow": _mock_data_flow,
     "homeassistant.helpers": MagicMock(),
     "homeassistant.helpers.selector": MagicMock(),
     "homeassistant.helpers.network": MagicMock(),

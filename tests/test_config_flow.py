@@ -99,7 +99,14 @@ sys.modules["homeassistant.const"] = _ha_const
 # -- homeassistant.data_entry_flow --
 _ha_def = types.ModuleType("homeassistant.data_entry_flow")
 FlowResult = dict  # the flow returns dicts
+
+
+class AbortFlow(Exception):
+    pass
+
+
 _ha_def.FlowResult = FlowResult
+_ha_def.AbortFlow = AbortFlow
 sys.modules["homeassistant.data_entry_flow"] = _ha_def
 
 # -- homeassistant.helpers.selector --

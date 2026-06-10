@@ -9,7 +9,7 @@ import voluptuous as vol
 
 from homeassistant import config_entries
 from homeassistant.const import CONF_CLIENT_ID, CONF_CLIENT_SECRET
-from homeassistant.data_entry_flow import FlowResult
+from homeassistant.data_entry_flow import AbortFlow, FlowResult
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.selector import (
     SelectOptionDict,
@@ -108,7 +108,7 @@ class AlexaActionsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
                 return await self.async_step_auth_smapi()
 
-            except config_entries.AbortFlow:
+            except AbortFlow:
                 raise
             except Exception:  # noqa: BLE001
                 _LOGGER.exception("Unexpected error in user step")
