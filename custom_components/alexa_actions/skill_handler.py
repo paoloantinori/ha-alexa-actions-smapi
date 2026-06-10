@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from pathlib import Path
 from typing import Any
 
 from homeassistant.core import HomeAssistant
@@ -28,7 +29,7 @@ from .const import (
     RESPONSE_STRING,
     RESPONSE_YES,
 )
-from .paths import find_lambda_dir
+_COMPONENT_DIR = Path(__file__).resolve().parent
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -77,11 +78,10 @@ def _string_to_bool(value: Any, default: bool = False) -> bool:
 
 
 def _load_language_strings() -> dict[str, dict[str, str]]:
-    """Load language_strings.json from the lambda/ directory (cached)."""
+    """Load language_strings.json from the component directory (cached)."""
     global _language_strings
     if _language_strings is None:
-        lambda_dir = find_lambda_dir()
-        path = lambda_dir / "language_strings.json"
+        path = _COMPONENT_DIR / "language_strings.json"
         with open(path, encoding="utf-8") as fh:
             raw = json.load(fh)
             # Pre-compute merged locale strings (two-tier: language prefix + exact).
