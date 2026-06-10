@@ -12,6 +12,40 @@ from .const import DOMAIN
 _LOGGER = logging.getLogger(__name__)
 
 
+class AlexaSkillView(HomeAssistantView):
+    """Handle incoming Alexa skill requests (POST webhook).
+
+    Alexa sends POST requests here when the skill is invoked.  The request
+    body is the standard Alexa JSON envelope.  We delegate to
+    ``skill_handler.handle_alexa_request`` which processes it natively
+    inside Home Assistant (no Lambda needed).
+    """
+
+    url = "/api/alexa_actions/skill"
+    name = "api:alexa_actions:skill"
+    requires_auth = False
+
+    def __init__(self, hass) -> None:
+        """Initialize the skill view."""
+        self._hass = hass
+
+    async def post(self, request: web.Request) -> web.Response:
+        """Process an incoming Alexa skill request."""
+        from .skill_handler import handle_alexa_request
+
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            _LOGGER.warning("Failed to parse Alexa request body")
+            return web.json_response(
+                {"version": "1.0", "response": {"shouldEndSession": True}},
+                status=400,
+            )
+
+        response = await handle_alexa_request(self._hass, body)
+        return web.json_response(response)
+
+
 class AlexaAuthCallbackView(HomeAssistantView):
     """Handle the OAuth2 callback from Amazon LWA."""
 

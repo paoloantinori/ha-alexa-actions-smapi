@@ -23,12 +23,8 @@ from homeassistant.helpers.selector import (
 from homeassistant.helpers.network import NoURLAvailableError, get_url
 
 from .api import LWAClient
-from .exceptions import AWSDeploymentError, SMAPIError
-from .lambda_deployer import LambdaDeployer
+from .exceptions import SMAPIError
 from .const import (
-    CONF_AWS_ACCESS_KEY_ID,
-    CONF_AWS_REGION,
-    CONF_AWS_SECRET_ACCESS_KEY,
     CONF_HA_TOKEN,
     CONF_HA_URL,
     CONF_INVOCATION_NAME,
@@ -54,6 +50,7 @@ _LOCALE_OPTIONS: list[SelectOptionDict] = [
 _DEFAULT_LOCALES = ["en-US"]
 
 _CALLBACK_PATH = "/auth/alexa_actions/callback"
+_SKILL_WEBHOOK_PATH = "/api/alexa_actions/skill"
 
 
 class AlexaActionsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -77,7 +74,7 @@ class AlexaActionsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Step 1: Collect LWA, AWS, and Home Assistant credentials."""
+        """Step 1: Collect LWA and Home Assistant credentials."""
         errors: dict[str, str] = {}
 
         if user_input is not None:
@@ -128,17 +125,6 @@ class AlexaActionsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 ),
                 vol.Required(CONF_CLIENT_SECRET): TextSelector(
                     TextSelectorConfig(type=TextSelectorType.PASSWORD)
-                ),
-                vol.Required(CONF_AWS_ACCESS_KEY_ID): TextSelector(
-                    TextSelectorConfig(type=TextSelectorType.TEXT)
-                ),
-                vol.Required(CONF_AWS_SECRET_ACCESS_KEY): TextSelector(
-                    TextSelectorConfig(type=TextSelectorType.PASSWORD)
-                ),
-                vol.Optional(
-                    CONF_AWS_REGION, default="us-east-1"
-                ): TextSelector(
-                    TextSelectorConfig(type=TextSelectorType.TEXT)
                 ),
                 vol.Required(CONF_HA_URL, default=ha_url_default): TextSelector(
                     TextSelectorConfig(type=TextSelectorType.URL)
@@ -240,7 +226,7 @@ class AlexaActionsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_setup(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Step 3: Create skill, deploy Lambda, configure everything."""
+        """Step 3: Create SMAPI skill pointing at HA webhook."""
         if self._lwa_client is None:
             return await self.async_step_user()
 
@@ -255,51 +241,33 @@ class AlexaActionsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     CONF_INVOCATION_NAME, DEFAULT_SKILL_NAME
                 )
 
-                # 1. Get vendor ID.
-                _LOGGER.info("Setup step 1/3: Getting vendor ID")
-                vendor_id = await smapi.async_get_vendor_id()
+                # Build the webhook URL that Alexa will POST to.
+                ha_url = self._user_input[CONF_HA_URL].rstrip("/")
+                endpoint_uri = f"{ha_url}{_SKILL_WEBHOOK_PATH}"
 
-                # 2. Deploy Lambda to AWS.
-                _LOGGER.info("Setup step 2/3: Deploying Lambda to AWS")
-                deployer = LambdaDeployer(
-                    self.hass,
-                    aws_access_key_id=self._user_input[CONF_AWS_ACCESS_KEY_ID],
-                    aws_secret_access_key=self._user_input[CONF_AWS_SECRET_ACCESS_KEY],
-                    aws_region=self._user_input.get(CONF_AWS_REGION, "us-east-1"),
-                )
-                lambda_arn = await deployer.async_deploy(
-                    home_assistant_url=self._user_input[CONF_HA_URL],
-                    ha_token=self._user_input[CONF_HA_TOKEN],
-                )
-                _LOGGER.info("Lambda deployed: %s", lambda_arn)
-
-                # 3. Create skill, upload models, update manifest, enable.
                 _LOGGER.info(
-                    "Setup step 3/3: Creating skill '%s' with endpoint %s",
-                    invocation_name, lambda_arn,
+                    "Setup: Creating skill '%s' with endpoint %s",
+                    invocation_name, endpoint_uri,
                 )
                 models = {loc: get_model(loc, invocation_name) for loc in locales}
                 setup_result = await smapi.async_setup_skill_complete(
-                    lambda_arn=lambda_arn,
                     models=models,
                     skill_name=invocation_name,
+                    endpoint_uri=endpoint_uri,
                 )
                 skill_id = setup_result["skill_id"]
 
                 _LOGGER.info(
-                    "Skill setup complete: skill_id=%s, lambda_arn=%s",
-                    skill_id, lambda_arn,
+                    "Skill setup complete: skill_id=%s, endpoint=%s",
+                    skill_id, endpoint_uri,
                 )
 
                 # Store results for the finish step.
                 self._user_input[CONF_SKILL_ID] = skill_id
-                self._user_input[CONF_VENDOR_ID] = vendor_id
+                self._user_input[CONF_VENDOR_ID] = setup_result.get("vendor_id", "")
 
                 return await self.async_step_finish()
 
-            except AWSDeploymentError as err:
-                _LOGGER.error("AWS deployment failed: %s", err)
-                errors["base"] = "hosted_error"
             except SMAPIError as err:
                 _LOGGER.error("SMAPI setup failed: %s", err)
                 errors["base"] = "smapi_error"
@@ -327,13 +295,6 @@ class AlexaActionsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 data={
                     CONF_CLIENT_ID: self._user_input[CONF_CLIENT_ID],
                     CONF_CLIENT_SECRET: self._user_input[CONF_CLIENT_SECRET],
-                    CONF_AWS_ACCESS_KEY_ID: self._user_input.get(
-                        CONF_AWS_ACCESS_KEY_ID, ""
-                    ),
-                    CONF_AWS_SECRET_ACCESS_KEY: self._user_input.get(
-                        CONF_AWS_SECRET_ACCESS_KEY, ""
-                    ),
-                    CONF_AWS_REGION: self._user_input.get(CONF_AWS_REGION, "us-east-1"),
                     CONF_HA_URL: self._user_input[CONF_HA_URL],
                     CONF_HA_TOKEN: self._user_input[CONF_HA_TOKEN],
                     CONF_INVOCATION_NAME: self._user_input.get(
@@ -418,7 +379,7 @@ class AlexaActionsOptionsFlow(config_entries.OptionsFlow):
 
                 skill_id = entry_data.get(CONF_SKILL_ID, "")
 
-                # Single LWA client for any SMAPI work needed.
+                # Update SMAPI if invocation or HA URL changed.
                 if (ha_url_changed or invocation_changed) and skill_id:
                     lwa_client = LWAClient(
                         self.hass,
@@ -433,35 +394,19 @@ class AlexaActionsOptionsFlow(config_entries.OptionsFlow):
 
                     smapi = SMAPI(lwa_client)
                     try:
-                        if ha_url_changed:
-                            # Redeploy Lambda with new HA URL.
-                            deployer = LambdaDeployer(
-                                self.hass,
-                                aws_access_key_id=entry_data.get(
-                                    CONF_AWS_ACCESS_KEY_ID, ""
-                                ),
-                                aws_secret_access_key=entry_data.get(
-                                    CONF_AWS_SECRET_ACCESS_KEY, ""
-                                ),
-                                aws_region=entry_data.get(
-                                    CONF_AWS_REGION, "us-east-1"
-                                ),
-                            )
-                            await deployer.async_deploy(
-                                home_assistant_url=new_ha_url,
-                                ha_token=entry_data[CONF_HA_TOKEN],
-                            )
-
-                        if invocation_changed:
+                        if ha_url_changed or invocation_changed:
+                            # Update manifest with new endpoint/invocation.
+                            ha_url = new_ha_url.rstrip("/")
+                            endpoint_uri = f"{ha_url}{_SKILL_WEBHOOK_PATH}"
                             locales = self._config_entry.options.get(
                                 CONF_LOCALES,
                                 entry_data.get(CONF_LOCALES, _DEFAULT_LOCALES),
                             )
                             await smapi.async_update_manifest(
                                 skill_id=skill_id,
-                                lambda_arn="",
                                 skill_name=new_invocation,
                                 locales=locales,
+                                endpoint_uri=endpoint_uri,
                             )
                     finally:
                         await lwa_client.async_close()

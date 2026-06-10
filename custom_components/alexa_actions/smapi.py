@@ -103,12 +103,15 @@ class SMAPI:
     async def async_update_manifest(
         self,
         skill_id: str,
-        lambda_arn: str,
         skill_name: str = DEFAULT_SKILL_NAME,
         locales: list[str] | None = None,
+        endpoint_uri: str | None = None,
+        lambda_arn: str | None = None,
     ) -> None:
-        """Replace the skill manifest, pointing at the given Lambda ARN."""
-        manifest = self._build_manifest(lambda_arn, skill_name, locales)
+        """Replace the skill manifest."""
+        manifest = self._build_manifest(
+            skill_name, locales, endpoint_uri=endpoint_uri, lambda_arn=lambda_arn,
+        )
         await self._async_request(
             "PUT",
             f"/v1/skills/{skill_id}/stages/development/manifest",
@@ -259,7 +262,7 @@ class SMAPI:
         Returns the new skill ID.
         """
         manifest = self._build_manifest(
-            lambda_arn="", skill_name=skill_name, locales=locales,
+            skill_name=skill_name, locales=locales,
         )
 
         data = await self._async_request(
@@ -381,9 +384,10 @@ class SMAPI:
 
     async def async_setup_skill_complete(
         self,
-        lambda_arn: str,
         models: dict[str, dict],
         skill_name: str = DEFAULT_SKILL_NAME,
+        endpoint_uri: str | None = None,
+        lambda_arn: str | None = None,
     ) -> dict:
         """Orchestrate full skill setup.
 
@@ -394,12 +398,11 @@ class SMAPI:
         4. Update the manifest for the locales that uploaded successfully.
         5. Enable the skill for development.
 
-        Returns a dict with skill_id, vendor_id, and lambda_arn.
+        Returns a dict with skill_id, vendor_id, and endpoint info.
         """
         _LOGGER.info(
-            "SMAPI setup: lambda_arn=%s, skill_name=%s",
-            lambda_arn,
-            skill_name,
+            "SMAPI setup: endpoint_uri=%s, lambda_arn=%s, skill_name=%s",
+            endpoint_uri, lambda_arn, skill_name,
         )
 
         vendor_id = await self.async_get_vendor_id()
@@ -413,7 +416,8 @@ class SMAPI:
         else:
             try:
                 skill_id = await self._async_create_skill(
-                    vendor_id, lambda_arn, skill_name, selected_locales
+                    vendor_id, lambda_arn or "", skill_name, selected_locales,
+                    endpoint_uri=endpoint_uri,
                 )
                 _LOGGER.info(
                     "Created new skill %s, waiting for provisioning", skill_id
@@ -422,7 +426,8 @@ class SMAPI:
             except HomeAssistantError as err:
                 if "409" in str(err):
                     skill_id = await self._async_resolve_conflict(
-                        vendor_id, lambda_arn, skill_name
+                        vendor_id, lambda_arn or "", skill_name,
+                        endpoint_uri=endpoint_uri,
                     )
                 else:
                     raise
@@ -468,7 +473,8 @@ class SMAPI:
         # Update manifest with the locales that uploaded successfully.
         try:
             manifest = self._build_manifest(
-                lambda_arn, skill_name, upload_locales
+                skill_name, upload_locales,
+                endpoint_uri=endpoint_uri, lambda_arn=lambda_arn,
             )
             await self._async_request(
                 "PUT",
@@ -493,6 +499,7 @@ class SMAPI:
         return {
             "skill_id": skill_id,
             "vendor_id": vendor_id,
+            "endpoint_uri": endpoint_uri,
             "lambda_arn": lambda_arn,
         }
 
@@ -506,9 +513,12 @@ class SMAPI:
         lambda_arn: str,
         skill_name: str,
         locales: list[str] | None = None,
+        endpoint_uri: str | None = None,
     ) -> str:
         """Create a new custom skill and return its skill ID."""
-        manifest = self._build_manifest(lambda_arn, skill_name, locales)
+        manifest = self._build_manifest(
+            skill_name, locales, endpoint_uri=endpoint_uri, lambda_arn=lambda_arn or None,
+        )
         data = await self._async_request(
             "POST",
             "/v1/skills",
@@ -544,7 +554,11 @@ class SMAPI:
         return None
 
     async def _async_resolve_conflict(
-        self, vendor_id: str, lambda_arn: str, skill_name: str
+        self,
+        vendor_id: str,
+        lambda_arn: str,
+        skill_name: str,
+        endpoint_uri: str | None = None,
     ) -> str:
         """Handle a 409 conflict by adopting the first existing skill."""
         data = await self._async_request(
@@ -560,20 +574,24 @@ class SMAPI:
                 "Skill conflict but no existing skills found"
             )
         skill_id = skills[0]["skillId"]
-        await self.async_update_manifest(skill_id, lambda_arn, skill_name)
+        await self.async_update_manifest(
+            skill_id, skill_name,
+            endpoint_uri=endpoint_uri, lambda_arn=lambda_arn or None,
+        )
         return skill_id
 
     def _build_manifest(
         self,
-        lambda_arn: str,
         skill_name: str,
         locales: list[str] | None = None,
+        endpoint_uri: str | None = None,
+        lambda_arn: str | None = None,
     ) -> dict:
         """Build the skill manifest.
 
-        When *lambda_arn* is non-empty the endpoint points at the ARN
-        (self-hosted Lambda).  When empty the ``endpoint`` key is omitted
-        so the caller can use the manifest for hosted-skill provisioning.
+        *endpoint_uri*: HTTPS webhook URL (takes precedence).
+        *lambda_arn*: AWS Lambda ARN (fallback for Lambda-based deployments).
+        If neither is provided the endpoint key is omitted.
         """
         target = locales if locales else list(_MANIFEST_LOCALE_INFO)
         locale_manifests: dict[str, dict] = {}
@@ -586,7 +604,9 @@ class SMAPI:
             }
 
         custom_api: dict = {"interfaces": []}
-        if lambda_arn:
+        if endpoint_uri:
+            custom_api["endpoint"] = {"uri": endpoint_uri}
+        elif lambda_arn:
             custom_api["endpoint"] = {"sourceArn": lambda_arn}
 
         return {

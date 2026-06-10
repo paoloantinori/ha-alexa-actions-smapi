@@ -11,6 +11,7 @@ from homeassistant.core import HomeAssistant, ServiceCall, callback
 
 from .const import (
     DOMAIN,
+    EVENT_ALEXA_ACTIONABLE_NOTIFICATION,
     INPUT_TEXT_ENTITY,
     SERVICE_SEND,
 )
@@ -66,9 +67,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         DOMAIN, SERVICE_SEND, async_send_notification, schema=SERVICE_SEND_SCHEMA
     )
 
+    # Register the Alexa skill webhook view.
+    from .views import AlexaSkillView
+    hass.http.register_view(AlexaSkillView(hass))
+
     @callback
     def handle_response(event) -> None:
-        """Handle response events from Lambda."""
+        """Handle response events from the skill handler."""
         _LOGGER.info(
             "Received Alexa response: event_id=%s, type=%s, response=%s",
             event.data.get("event_id"),
@@ -76,7 +81,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             str(event.data.get("event_response", ""))[:100],
         )
 
-    remove_listener = hass.bus.async_listen("alexa_actionable_notification", handle_response)
+    remove_listener = hass.bus.async_listen(EVENT_ALEXA_ACTIONABLE_NOTIFICATION, handle_response)
 
     hass.data[DOMAIN][f"{entry.entry_id}_unload"] = [
         lambda: hass.services.async_remove(DOMAIN, SERVICE_SEND),
