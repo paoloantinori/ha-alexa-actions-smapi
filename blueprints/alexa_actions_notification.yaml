@@ -93,7 +93,7 @@ action:
     target:
       entity_id: !input alexa_device
 
-  # 2. Wait for the Lambda to post back the response event
+  # 2. Wait for the skill handler to post back the response event
   - wait_for_trigger:
       - platform: event
         event_type: alexa_actionable_notification

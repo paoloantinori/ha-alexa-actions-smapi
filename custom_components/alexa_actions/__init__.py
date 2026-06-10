@@ -22,7 +22,7 @@ _LOGGER = logging.getLogger(__name__)
 SERVICE_SEND_SCHEMA = vol.Schema(
     {
         vol.Required("text"): str,
-        vol.Required("alexa_device"): str,
+        vol.Optional("alexa_device"): str,
         vol.Optional("event_id"): str,
         vol.Optional("suppress_confirmation", default=False): bool,
         vol.Optional("options"): [str],
@@ -38,10 +38,24 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async def async_send_notification(call: ServiceCall) -> None:
         """Handle the alexa_actions.send service call."""
         text = call.data["text"]
-        alexa_device = call.data["alexa_device"]
+        # Support both: data.alexa_device (direct YAML) and
+        # target.entity_id (blueprints / HA UI service calls).
+        alexa_device = call.data.get("alexa_device") or ""
+        if not alexa_device and call.target and call.target.entity_id:
+            alexa_device = next(iter(call.target.entity_id), "")
+        if not alexa_device:
+            _LOGGER.error("alexa_device is required — pass via data or target")
+            return
+
         event_id = call.data.get("event_id", str(uuid.uuid4()))
         suppress_confirmation = call.data["suppress_confirmation"]
         options = call.data.get("options", [])
+
+        # Validate skill_id early, before writing state.
+        skill_id = entry.data.get(CONF_SKILL_ID, "")
+        if not skill_id:
+            _LOGGER.error("No skill_id configured — cannot invoke skill")
+            return
 
         payload = {
             "text": text,
@@ -59,11 +73,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # run_skill() path (POST to /api/behaviors/preview with
         # Alexa.Operation.SkillConnections.Launch), which sends a
         # LaunchRequest directly to our HTTPS webhook endpoint.
-        skill_id = entry.data.get(CONF_SKILL_ID, "")
-        if not skill_id:
-            _LOGGER.error("No skill_id configured — cannot invoke skill")
-            return
-
         await hass.services.async_call(
             "media_player",
             "play_media",
