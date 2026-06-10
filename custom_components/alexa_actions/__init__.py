@@ -10,6 +10,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall, callback
 
 from .const import (
+    CONF_SKILL_ID,
     DOMAIN,
     EVENT_ALEXA_ACTIONABLE_NOTIFICATION,
     INPUT_TEXT_ENTITY,
@@ -21,6 +22,7 @@ _LOGGER = logging.getLogger(__name__)
 SERVICE_SEND_SCHEMA = vol.Schema(
     {
         vol.Required("text"): str,
+        vol.Required("alexa_device"): str,
         vol.Optional("event_id"): str,
         vol.Optional("suppress_confirmation", default=False): bool,
         vol.Optional("options"): [str],
@@ -36,6 +38,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async def async_send_notification(call: ServiceCall) -> None:
         """Handle the alexa_actions.send service call."""
         text = call.data["text"]
+        alexa_device = call.data["alexa_device"]
         event_id = call.data.get("event_id", str(uuid.uuid4()))
         suppress_confirmation = call.data["suppress_confirmation"]
         options = call.data.get("options", [])
@@ -51,17 +54,30 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # Write payload to input_text entity
         await _async_set_input_text_state(hass, json.dumps(payload))
 
-        # Trigger Alexa skill via media_player.play_media
+        # Trigger Alexa skill via SkillConnections.Launch (direct by ID).
+        # Uses media_content_type "skill" so alexa_media uses its
+        # run_skill() path (POST to /api/behaviors/preview with
+        # Alexa.Operation.SkillConnections.Launch), which sends a
+        # LaunchRequest directly to our HTTPS webhook endpoint.
+        skill_id = entry.data.get(CONF_SKILL_ID, "")
+        if not skill_id:
+            _LOGGER.error("No skill_id configured — cannot invoke skill")
+            return
+
         await hass.services.async_call(
             "media_player",
             "play_media",
             {
-                "media_content_id": "alexActionsSkillAutomation",
-                "media_content_type": "custom",
+                "entity_id": alexa_device,
+                "media_content_id": skill_id,
+                "media_content_type": "skill",
             },
             blocking=False,
         )
-        _LOGGER.info("Sent actionable notification: event_id=%s", event_id)
+        _LOGGER.info(
+            "Sent actionable notification: event_id=%s, device=%s",
+            event_id, alexa_device,
+        )
 
     hass.services.async_register(
         DOMAIN, SERVICE_SEND, async_send_notification, schema=SERVICE_SEND_SCHEMA
