@@ -19,7 +19,7 @@
       },
       "setup": {
         "title": "Setting up",
-        "description": "Creating Alexa-hosted skill and deploying code..."
+        "description": "Creating Alexa skill and configuring webhook endpoint..."
       },
       "finish": {
         "title": "Setup Complete",
@@ -30,7 +30,6 @@
       "invalid_auth": "Authorization failed. Please try again.",
       "authorization_pending": "Waiting for authorization...",
       "smapi_error": "SMAPI setup failed. Check Home Assistant logs for details.",
-      "hosted_error": "Alexa-hosted skill deployment failed. Check logs and ensure git is installed.",
       "cannot_connect": "Failed to connect to Amazon LWA.",
       "unknown": "Setup failed. Check the Home Assistant logs for the full error message."
     },
@@ -42,7 +41,7 @@
     "step": {
       "init": {
         "title": "Options",
-        "description": "Update Alexa Actions settings. Changing invocation name or HA URL will redeploy the skill code and update the manifest.",
+        "description": "Update Alexa Actions settings. Changing invocation name or HA URL will update the skill manifest.",
         "data": {
           "invocation_name": "Skill Invocation Name",
           "ha_url": "Home Assistant URL"
