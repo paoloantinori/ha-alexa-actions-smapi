@@ -50,15 +50,17 @@ STOP_MESSAGE = "STOP_MESSAGE"
 class HaState:
     """Parsed state from the actionable-notification entity."""
 
-    __slots__ = ("event_id", "suppress_confirmation", "text")
+    __slots__ = ("event_id", "reprompt", "suppress_confirmation", "text")
 
     def __init__(
         self,
         event_id: str | None,
         suppress_confirmation: bool,
         text: str | None,
+        reprompt: str | None = None,
     ) -> None:
         self.event_id = event_id
+        self.reprompt = reprompt
         self.suppress_confirmation = suppress_confirmation
         self.text = text
 
@@ -191,6 +193,7 @@ def _get_ha_state(hass: HomeAssistant) -> HaState | None:
         return None
     return HaState(
         event_id=decoded.get("event"),
+        reprompt=decoded.get("reprompt"),
         suppress_confirmation=_string_to_bool(decoded.get("suppress_confirmation")),
         text=decoded.get("text"),
     )
@@ -264,8 +267,9 @@ async def _handle_launch(hass: HomeAssistant, body: dict, ls: dict) -> dict:
     if not ha_state:
         return _build_response()
     if ha_state.event_id:
+        reprompt = ha_state.reprompt or ha_state.text
         return _build_response(
-            speak_output=ha_state.text, reprompt="", should_end_session=False,
+            speak_output=ha_state.text, reprompt=reprompt, should_end_session=False,
         )
     return _build_response(speak_output=ha_state.text)
 

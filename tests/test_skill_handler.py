@@ -312,6 +312,30 @@ class TestHandleLaunch:
         assert r["response"]["outputSpeech"]["type"] == "SSML"
         assert r["response"]["outputSpeech"]["ssml"] == ssml
 
+    @pytest.mark.asyncio
+    async def test_custom_reprompt(self):
+        hass = _make_ha({"event": "evt1", "text": "Did you take the pill?", "reprompt": "Say yes or no", "suppress_confirmation": False})
+        r = await sh.handle_alexa_request(hass, _launch_request())
+        assert r["response"]["outputSpeech"]["text"] == "Did you take the pill?"
+        assert r["response"]["reprompt"]["outputSpeech"]["text"] == "Say yes or no"
+        assert r["response"]["shouldEndSession"] is False
+
+    @pytest.mark.asyncio
+    async def test_reprompt_falls_back_to_text(self):
+        hass = _make_ha({"event": "evt1", "text": "Did you take the pill?", "suppress_confirmation": False})
+        r = await sh.handle_alexa_request(hass, _launch_request())
+        assert r["response"]["outputSpeech"]["text"] == "Did you take the pill?"
+        assert r["response"]["reprompt"]["outputSpeech"]["text"] == "Did you take the pill?"
+
+    @pytest.mark.asyncio
+    async def test_ssml_reprompt(self):
+        ssml_reprompt = "<speak>Scusa<break time='500ms'/>rispondi sì o no.</speak>"
+        hass = _make_ha({"event": "evt1", "text": "Hai preso la pastiglia?", "reprompt": ssml_reprompt, "suppress_confirmation": False})
+        r = await sh.handle_alexa_request(hass, _launch_request())
+        assert r["response"]["outputSpeech"]["type"] == "PlainText"
+        assert r["response"]["reprompt"]["outputSpeech"]["type"] == "SSML"
+        assert r["response"]["reprompt"]["outputSpeech"]["ssml"] == ssml_reprompt
+
 
 class TestHandleYes:
     @pytest.mark.asyncio
