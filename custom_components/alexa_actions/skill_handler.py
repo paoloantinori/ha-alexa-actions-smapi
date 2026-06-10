@@ -45,6 +45,7 @@ ERROR_CONFIG = "ERROR_CONFIG"
 OKAY = "OKAY"
 SELECTED = "SELECTED"
 STOP_MESSAGE = "STOP_MESSAGE"
+NO_NOTIFICATIONS = "NO_NOTIFICATIONS"
 
 
 class HaState:
@@ -264,14 +265,13 @@ def _build_response(
 async def _handle_launch(hass: HomeAssistant, body: dict, ls: dict) -> dict:
     """LaunchRequest — speak the notification text."""
     ha_state = _get_ha_state(hass)
-    if not ha_state:
-        return _build_response()
-    if ha_state.event_id:
-        reprompt = ha_state.reprompt or ha_state.text
-        return _build_response(
-            speak_output=ha_state.text, reprompt=reprompt, should_end_session=False,
-        )
-    return _build_response(speak_output=ha_state.text)
+    if not ha_state or not ha_state.event_id:
+        speak = ls.get(NO_NOTIFICATIONS, "No pending notifications")
+        return _build_response(speak_output=speak)
+    reprompt = ha_state.reprompt or ha_state.text
+    return _build_response(
+        speak_output=ha_state.text, reprompt=reprompt, should_end_session=False,
+    )
 
 
 def _make_simple_response_handler(response_const: str):

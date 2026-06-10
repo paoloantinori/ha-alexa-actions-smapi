@@ -295,14 +295,31 @@ class TestHandleLaunch:
     async def test_no_event_id_ends_session(self):
         hass = _make_ha({"text": "Hello!", "suppress_confirmation": False})
         r = await sh.handle_alexa_request(hass, _launch_request())
+        assert r["response"]["outputSpeech"]["text"] == "No pending notifications"
         assert r["response"]["shouldEndSession"] is True
 
     @pytest.mark.asyncio
     async def test_missing_entity(self):
         hass = _make_ha(None)
         r = await sh.handle_alexa_request(hass, _launch_request())
-        # Should return empty response (no text to speak)
-        assert "outputSpeech" not in r["response"]
+        assert r["response"]["outputSpeech"]["text"] == "No pending notifications"
+        assert r["response"]["shouldEndSession"] is True
+
+    @pytest.mark.asyncio
+    async def test_no_notifications_missing_entity(self):
+        """When input_text entity is missing, speak no-notifications message."""
+        hass = _make_ha(None)
+        r = await sh.handle_alexa_request(hass, _launch_request())
+        assert r["response"]["outputSpeech"]["text"] == "No pending notifications"
+        assert r["response"]["shouldEndSession"] is True
+
+    @pytest.mark.asyncio
+    async def test_no_notifications_no_event_id(self):
+        """When entity exists but has no event_id, speak no-notifications message."""
+        hass = _make_ha({"text": "Hello!", "suppress_confirmation": False})
+        r = await sh.handle_alexa_request(hass, _launch_request())
+        assert r["response"]["outputSpeech"]["text"] == "No pending notifications"
+        assert r["response"]["shouldEndSession"] is True
 
     @pytest.mark.asyncio
     async def test_ssml_notification_text(self):
