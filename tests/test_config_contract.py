@@ -76,7 +76,7 @@ def _make_mock_hass() -> MagicMock:
 
 
 async def _setup_entry_and_get_handler(hass: MagicMock):
-    """Run async_setup_entry and return the registered service handler.
+    """Run async_setup_entry and return the ``send`` service handler.
 
     The ``views`` module is reloaded each time because ``AlexaSkillView``
     inherits from the MagicMock ``HomeAssistantView``.  Instantiating it
@@ -91,7 +91,12 @@ async def _setup_entry_and_get_handler(hass: MagicMock):
     entry.entry_id = "test_entry"
     entry.data = {"skill_id": "amzn1.ask.skill.test123"}
     await init_mod.async_setup_entry(hass, entry)
-    return hass.services.async_register.call_args.args[2]
+    # Find the "send" handler (not "send_proactive") by inspecting
+    # all async_register calls.  call_args only captures the last one.
+    for call in hass.services.async_register.call_args_list:
+        if call.args[1] == init_mod.SERVICE_SEND:
+            return call.args[2]
+    raise RuntimeError("alexa_actions.send service was not registered")
 
 
 def _make_service_call(data: dict, target_entity: str = "media_player.echo") -> MagicMock:

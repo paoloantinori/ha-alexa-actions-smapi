@@ -529,7 +529,11 @@ class TestInitSMAPIUpdate:
             "locales": ["en-US"],
         }
         await init_mod.async_setup_entry(hass, entry)
-        handler = hass.services.async_register.call_args.args[2]
+        # Find the "send" handler (not "send_proactive")
+        handler = next(
+            c.args[2] for c in hass.services.async_register.call_args_list
+            if c.args[1] == init_mod.SERVICE_SEND
+        )
 
         data = init_mod.SERVICE_SEND_SCHEMA({
             "text": "Pizza or pasta?",
@@ -610,7 +614,11 @@ class TestInitSMAPIUpdate:
             "locales": ["en-US"],
         }
         await init_mod.async_setup_entry(hass, entry)
-        handler = hass.services.async_register.call_args.args[2]
+        # Find the "send" handler (not "send_proactive")
+        handler = next(
+            c.args[2] for c in hass.services.async_register.call_args_list
+            if c.args[1] == init_mod.SERVICE_SEND
+        )
 
         data = init_mod.SERVICE_SEND_SCHEMA({
             "text": "Did you take the pill?",
@@ -672,7 +680,11 @@ class TestInitSMAPIUpdate:
             "locales": ["en-US"],
         }
         await init_mod.async_setup_entry(hass, entry)
-        handler = hass.services.async_register.call_args.args[2]
+        # Find the "send" handler (not "send_proactive")
+        handler = next(
+            c.args[2] for c in hass.services.async_register.call_args_list
+            if c.args[1] == init_mod.SERVICE_SEND
+        )
 
         data = init_mod.SERVICE_SEND_SCHEMA({
             "text": "Pick one",

@@ -16,8 +16,10 @@ from .const import (
     DOMAIN,
     EVENT_ALEXA_ACTIONABLE_NOTIFICATION,
     INPUT_TEXT_ENTITY,
+    SCOPE_PROACTIVE,
     SCOPE_SMAPI,
     SERVICE_SEND,
+    SERVICE_SEND_PROACTIVE,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -33,6 +35,15 @@ SERVICE_SEND_SCHEMA = vol.Schema(
         vol.Optional("dialog"): dict,
         vol.Optional("display_title"): str,
         vol.Optional("display_body"): str,
+    }
+)
+
+SERVICE_SEND_PROACTIVE_SCHEMA = vol.Schema(
+    {
+        vol.Required("text"): str,
+        vol.Optional("event_type", default="AMAZON.MessageAlert.Activated"): str,
+        vol.Optional("locale"): str,
+        vol.Optional("reference_id"): str,
     }
 )
 
@@ -179,6 +190,72 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         DOMAIN, SERVICE_SEND, async_send_notification, schema=SERVICE_SEND_SCHEMA
     )
 
+    # ------------------------------------------------------------------
+    # Proactive Events service
+    # ------------------------------------------------------------------
+
+    async def async_send_proactive(call: ServiceCall) -> None:
+        """Handle the alexa_actions.send_proactive service call.
+
+        Sends a proactive notification via the Alexa Proactive Events API.
+        This does NOT require ``play_media`` or ``alexa_media`` — Amazon
+        pushes the event directly to the user's devices.
+        """
+        text = call.data["text"]
+        event_type = call.data["event_type"]
+        locale = call.data.get(
+            "locale",
+            entry.data.get(CONF_LOCALES, ["en-US"])[0],
+        )
+        reference_id = call.data.get("reference_id")
+
+        try:
+            from homeassistant.const import CONF_CLIENT_ID, CONF_CLIENT_SECRET
+
+            from .api import LWAClient
+            from .proactive_events import ProactiveEventsClient
+
+            refresh_token = entry.data.get(CONF_REFRESH_TOKEN)
+            client_id = entry.data.get(CONF_CLIENT_ID)
+            client_secret = entry.data.get(CONF_CLIENT_SECRET)
+
+            if not all([refresh_token, client_id, client_secret]):
+                _LOGGER.error(
+                    "Cannot send proactive event — missing LWA credentials. "
+                    "Re-configure the integration."
+                )
+                return
+
+            lwa = LWAClient(hass, client_id, client_secret)
+            # Register refresh token for both scopes so the client can try
+            # the proactive-events scope first, then fall back to SMAPI.
+            lwa.set_refresh_token(SCOPE_SMAPI, refresh_token)
+            lwa.set_refresh_token(SCOPE_PROACTIVE, refresh_token)
+
+            client = ProactiveEventsClient(lwa)
+            result = await client.async_send_notification(
+                text=text,
+                event_type=event_type,
+                locale=locale,
+                reference_id=reference_id,
+            )
+            _LOGGER.info(
+                "Proactive event sent: event_type=%s, result=%s",
+                event_type,
+                result,
+            )
+        except Exception:
+            _LOGGER.error(
+                "Failed to send proactive event", exc_info=True,
+            )
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_SEND_PROACTIVE,
+        async_send_proactive,
+        schema=SERVICE_SEND_PROACTIVE_SCHEMA,
+    )
+
     # Register the Alexa skill webhook view.
     from .views import AlexaSkillView
     hass.http.register_view(AlexaSkillView(hass))
@@ -235,6 +312,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     hass.data[DOMAIN][f"{entry.entry_id}_unload"] = [
         lambda: hass.services.async_remove(DOMAIN, SERVICE_SEND),
+        lambda: hass.services.async_remove(DOMAIN, SERVICE_SEND_PROACTIVE),
         remove_listener,
     ]
 
@@ -252,6 +330,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Remove service if no more entries
     if not hass.data[DOMAIN]:
         hass.services.async_remove(DOMAIN, SERVICE_SEND)
+        hass.services.async_remove(DOMAIN, SERVICE_SEND_PROACTIVE)
 
     return True
 

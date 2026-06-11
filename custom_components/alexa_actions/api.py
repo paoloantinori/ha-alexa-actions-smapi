@@ -10,7 +10,7 @@ import aiohttp
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 
-from .const import LWA_AUTH_URL, LWA_TOKEN_URL, SCOPE_SMAPI
+from .const import LWA_AUTH_URL, LWA_TOKEN_URL, SCOPE_PROACTIVE, SCOPE_SMAPI
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -95,6 +95,10 @@ class LWAClient:
     async def async_get_smapi_token(self) -> str:
         """Return a valid SMAPI access token, refreshing when necessary."""
         return await self._async_get_token(SCOPE_SMAPI)
+
+    async def async_get_proactive_token(self) -> str:
+        """Return a valid Proactive Events access token, refreshing when necessary."""
+        return await self._async_get_token(SCOPE_PROACTIVE)
 
     # ------------------------------------------------------------------
     # Session lifecycle

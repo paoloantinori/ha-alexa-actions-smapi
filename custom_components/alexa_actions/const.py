@@ -6,8 +6,11 @@ LWA_AUTH_URL = "https://www.amazon.com/ap/oa"
 LWA_TOKEN_URL = "https://api.amazon.com/auth/O2/token"
 
 SCOPE_SMAPI = "alexa::ask:skills:readwrite alexa::ask:models:readwrite"
+SCOPE_PROACTIVE = "alexa::proactive_events"
 
 SMAPI_BASE_URL = "https://api.amazonalexa.com"
+PROACTIVE_EVENTS_URL_LIVE = "/v1/proactiveEvents"
+PROACTIVE_EVENTS_URL_DEV = "/v1/proactiveEvents/stages/development"
 
 DEFAULT_SKILL_NAME = "actionable notifications"
 
@@ -24,6 +27,7 @@ CONF_AWS_REGION = "aws_region"
 CONF_PERSON_MAP = "person_map"
 
 SERVICE_SEND = "send"
+SERVICE_SEND_PROACTIVE = "send_proactive"
 INPUT_TEXT_ENTITY = "input_text.alexa_actionable_notification"
 EVENT_ALEXA_ACTIONABLE_NOTIFICATION = "alexa_actionable_notification"
 
