@@ -27,6 +27,7 @@ SERVICE_SEND_SCHEMA = vol.Schema(
         vol.Optional("reprompt"): str,
         vol.Optional("suppress_confirmation", default=False): bool,
         vol.Optional("options"): [str],
+        vol.Optional("dialog"): dict,
     }
 )
 
@@ -69,6 +70,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         reprompt = call.data.get("reprompt")
         if reprompt:
             payload["reprompt"] = reprompt
+
+        dialog = call.data.get("dialog")
+        if dialog:
+            payload["dialog"] = dialog
 
         # Write payload to input_text entity
         await _async_set_input_text_state(hass, json.dumps(payload))

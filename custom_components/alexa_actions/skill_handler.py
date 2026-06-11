@@ -9,6 +9,7 @@ Business logic is ported from ``lambda/lambda_function.py``.  The
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import re
@@ -21,6 +22,7 @@ from .const import (
     EVENT_ALEXA_ACTIONABLE_NOTIFICATION,
     INPUT_TEXT_ENTITY,
     RESPONSE_DATE_TIME,
+    RESPONSE_DIALOG,
     RESPONSE_DURATION,
     RESPONSE_NO,
     RESPONSE_NONE,
@@ -51,7 +53,7 @@ NO_NOTIFICATIONS = "NO_NOTIFICATIONS"
 class HaState:
     """Parsed state from the actionable-notification entity."""
 
-    __slots__ = ("event_id", "reprompt", "suppress_confirmation", "text")
+    __slots__ = ("event_id", "reprompt", "suppress_confirmation", "text", "dialog")
 
     def __init__(
         self,
@@ -59,11 +61,49 @@ class HaState:
         suppress_confirmation: bool,
         text: str | None,
         reprompt: str | None = None,
+        dialog: DialogDefinition | None = None,
     ) -> None:
         self.event_id = event_id
         self.reprompt = reprompt
         self.suppress_confirmation = suppress_confirmation
         self.text = text
+        self.dialog = dialog
+
+
+@dataclasses.dataclass
+class DialogSlot:
+    """A single slot definition within a multi-turn dialog."""
+
+    name: str
+    type: str
+    prompt: str
+
+
+@dataclasses.dataclass
+class DialogDefinition:
+    """Defines a multi-turn dialog with slots and optional confirmation.
+
+    Schema for the ``dialog`` key in the notification payload::
+
+        {
+            "intent": "String",            # Alexa intent name to use
+            "slots": [                      # Ordered list of slots to collect
+                {
+                    "name": "reminder_text",# Slot name (dynamic, mapped at runtime)
+                    "type": "AMAZON.Person",# Alexa slot type (AMAZON.Person, AMAZON.TIME, etc.)
+                    "prompt": "What do you want to be reminded of?"
+                },
+                ...
+            ],
+            "confirm": true,                # Whether to ask for confirmation
+            "confirm_prompt": "I'll remind you to {reminder_text} at {reminder_time}. Correct?"
+        }
+    """
+
+    intent: str
+    slots: list[DialogSlot]
+    confirm: bool = False
+    confirm_prompt: str | None = None
 
 
 def _string_to_bool(value: Any, default: bool = False) -> bool:
@@ -192,11 +232,23 @@ def _get_ha_state(hass: HomeAssistant) -> HaState | None:
     except (json.JSONDecodeError, TypeError):
         _LOGGER.error("Cannot parse state of %s: %s", INPUT_TEXT_ENTITY, state.state)
         return None
+
+    dialog = None
+    if decoded.get("dialog"):
+        raw = decoded["dialog"]
+        dialog = DialogDefinition(
+            intent=raw.get("intent", "String"),
+            slots=[DialogSlot(**s) for s in raw.get("slots", [])],
+            confirm=raw.get("confirm", False),
+            confirm_prompt=raw.get("confirm_prompt"),
+        )
+
     return HaState(
         event_id=decoded.get("event"),
         reprompt=decoded.get("reprompt"),
         suppress_confirmation=_string_to_bool(decoded.get("suppress_confirmation")),
         text=decoded.get("text"),
+        dialog=dialog,
     )
 
 
@@ -257,17 +309,92 @@ def _build_response(
     return {"version": "1.0", "response": response}
 
 
+def _build_elicit_slot_response(
+    intent_name: str,
+    slot_name: str,
+    speak_output: str,
+    reprompt: str | None = None,
+) -> dict:
+    """Build an ElicitSlot directive response to ask for a specific missing slot."""
+    result = _build_response(
+        speak_output=speak_output,
+        reprompt=reprompt or speak_output,
+        should_end_session=False,
+    )
+    result["response"]["directives"] = [{
+        "type": "Dialog.ElicitSlot",
+        "slotToElicit": slot_name,
+        "updatedIntent": {
+            "name": intent_name,
+            "confirmationStatus": "NONE",
+            "slots": {},
+        },
+    }]
+    return result
+
+
+def _build_confirm_intent_response(
+    intent_name: str,
+    slots: dict,
+    speak_output: str,
+) -> dict:
+    """Build a ConfirmIntent directive response for final confirmation."""
+    result = _build_response(speak_output=speak_output, should_end_session=False)
+    result["response"]["directives"] = [{
+        "type": "Dialog.ConfirmIntent",
+        "updatedIntent": {
+            "name": intent_name,
+            "confirmationStatus": "NONE",
+            "slots": slots,
+        },
+    }]
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Dialog state tracking helpers
+# ---------------------------------------------------------------------------
+
+
+def _get_session_attributes(request_body: dict) -> dict:
+    """Extract session attributes from the Alexa request."""
+    return request_body.get("session", {}).get("attributes", {})
+
+
+def _get_next_missing_slot(
+    dialog: DialogDefinition, collected: dict[str, str],
+) -> DialogSlot | None:
+    """Find the first slot in the dialog definition that hasn't been collected."""
+    for slot in dialog.slots:
+        if slot.name not in collected or collected[slot.name] is None:
+            return slot
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Intent handlers
 # ---------------------------------------------------------------------------
 
 
 async def _handle_launch(hass: HomeAssistant, body: dict, ls: dict) -> dict:
-    """LaunchRequest — speak the notification text."""
+    """LaunchRequest — speak the notification text or start a multi-turn dialog."""
     ha_state = _get_ha_state(hass)
     if not ha_state or not ha_state.event_id:
         speak = ls.get(NO_NOTIFICATIONS, "No pending notifications")
         return _build_response(speak_output=speak)
+
+    # Multi-turn dialog: start by eliciting the first slot
+    if ha_state.dialog and ha_state.dialog.slots:
+        first_slot = ha_state.dialog.slots[0]
+        response = _build_elicit_slot_response(
+            intent_name=ha_state.dialog.intent,
+            slot_name=first_slot.name,
+            speak_output=first_slot.prompt,
+        )
+        response["sessionAttributes"] = {"_dialog_slots": {}}
+        return response
+
+    # Single-turn (existing behavior)
     reprompt = ha_state.reprompt or ha_state.text
     return _build_response(
         speak_output=ha_state.text, reprompt=reprompt, should_end_session=False,
@@ -357,6 +484,91 @@ async def _handle_date(hass: HomeAssistant, body: dict, ls: dict) -> dict:
 async def _handle_cancel_stop(hass: HomeAssistant, body: dict, ls: dict) -> dict:
     """Cancel/Stop intents — speak stop message."""
     return _build_response(speak_output=ls.get(STOP_MESSAGE, "Goodbye"))
+
+
+async def _handle_dialog_turn(hass: HomeAssistant, body: dict, ls: dict) -> dict:
+    """Handle a multi-turn dialog intent — collect slots until complete.
+
+    This handler is invoked when session attributes indicate an active
+    multi-turn dialog (``_dialog_slots`` key present).  It collects slot
+    values from each turn, persists them in session attributes, and fires
+    the HA event once all slots are filled (and optionally confirmed).
+    """
+    ha_state = _get_ha_state(hass)
+    if not ha_state or not ha_state.dialog:
+        return _build_response()
+
+    dialog = ha_state.dialog
+    session_attrs = _get_session_attributes(body)
+    collected: dict[str, str] = dict(session_attrs.get("_dialog_slots", {}))
+
+    # Collect slot values from this turn
+    for slot in dialog.slots:
+        val = _get_slot_value(body, slot.name)
+        if val and val != "?":
+            collected[slot.name] = val
+
+    # Check for confirmation response (YES/NO after ConfirmIntent)
+    intent_name = body.get("request", {}).get("intent", {}).get("name", "")
+    if intent_name == "AMAZON.YesIntent" and session_attrs.get("_awaiting_confirm"):
+        # All slots collected and confirmed — fire event
+        _post_ha_event(
+            hass, ha_state, json.dumps(collected), RESPONSE_DIALOG, ls, body,
+        )
+        speak = ls.get(OKAY, "Okay")
+        return _build_response(speak_output=speak, should_end_session=True)
+
+    if intent_name == "AMAZON.NoIntent" and session_attrs.get("_awaiting_confirm"):
+        # User rejected confirmation — re-elicit first slot to start over
+        collected.clear()
+        if not dialog.slots:
+            return _build_response()
+        first_slot = dialog.slots[0]
+        response = _build_elicit_slot_response(
+            intent_name=dialog.intent,
+            slot_name=first_slot.name,
+            speak_output=first_slot.prompt,
+        )
+        response["sessionAttributes"] = {"_dialog_slots": {}}
+        return response
+
+    # Check if more slots are needed
+    next_slot = _get_next_missing_slot(dialog, collected)
+    if next_slot:
+        response = _build_elicit_slot_response(
+            intent_name=dialog.intent,
+            slot_name=next_slot.name,
+            speak_output=next_slot.prompt,
+        )
+        response["sessionAttributes"] = {"_dialog_slots": collected}
+        return response
+
+    # All slots collected
+    if dialog.confirm and dialog.confirm_prompt:
+        # Build confirmation prompt with slot values substituted (single-pass)
+        prompt = dialog.confirm_prompt.format_map(
+            {k: str(v) for k, v in collected.items()}
+        )
+        response = _build_confirm_intent_response(
+            intent_name=dialog.intent,
+            slots={
+                s.name: {"name": s.name, "value": collected.get(s.name)}
+                for s in dialog.slots
+            },
+            speak_output=prompt,
+        )
+        response["sessionAttributes"] = {
+            "_dialog_slots": collected,
+            "_awaiting_confirm": True,
+        }
+        return response
+
+    # No confirmation needed — fire event immediately
+    _post_ha_event(
+        hass, ha_state, json.dumps(collected), RESPONSE_DIALOG, ls, body,
+    )
+    speak = "" if ha_state.suppress_confirmation else ls.get(OKAY, "Okay")
+    return _build_response(speak_output=speak, should_end_session=True)
 
 
 async def _handle_fallback(hass: HomeAssistant, body: dict, ls: dict) -> dict:
@@ -457,6 +669,21 @@ async def handle_alexa_request(hass: HomeAssistant, request_body: dict) -> dict:
 
         if req_type == "IntentRequest":
             intent_name = req.get("intent", {}).get("name", "")
+
+            # Check if a multi-turn dialog is active via session attributes.
+            # When _dialog_slots is present in session, the request is part of
+            # an ongoing dialog and must be routed to _handle_dialog_turn
+            # regardless of the intent name.
+            session_attrs = _get_session_attributes(request_body)
+            if session_attrs.get("_dialog_slots") is not None:
+                return await _handle_dialog_turn(hass, request_body, locale_strings)
+
+            # YES/NO after a ConfirmIntent also signals dialog continuation
+            if intent_name in ("AMAZON.YesIntent", "AMAZON.NoIntent"):
+                if session_attrs.get("_awaiting_confirm"):
+                    return await _handle_dialog_turn(hass, request_body, locale_strings)
+
+            # Standard single-turn intent dispatch
             handler = _INTENT_HANDLERS.get(intent_name)
             if handler:
                 return await handler(hass, request_body, locale_strings)

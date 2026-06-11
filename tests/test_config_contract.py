@@ -342,3 +342,77 @@ class TestEndToEndReprompt:
         # Reprompt should fall back to the notification text
         assert response["response"]["reprompt"]["outputSpeech"]["text"] == "Did you take the pill?"
         assert response["response"]["shouldEndSession"] is False
+
+
+# ===========================================================================
+# Test class: Dialog contract
+# ===========================================================================
+
+
+class TestDialogContract:
+    """Verify dialog definition flows through the service layer correctly."""
+
+    def test_schema_accepts_dialog(self):
+        """SERVICE_SEND_SCHEMA must accept a dialog dict."""
+        schema = init_mod.SERVICE_SEND_SCHEMA
+        result = schema(
+            {
+                "text": "Setting a reminder",
+                "suppress_confirmation": False,
+                "dialog": {
+                    "intent": "String",
+                    "slots": [
+                        {"name": "item", "type": "AMAZON.Person", "prompt": "What?"},
+                    ],
+                },
+            }
+        )
+        assert result["dialog"]["intent"] == "String"
+        assert len(result["dialog"]["slots"]) == 1
+
+    @pytest.mark.asyncio
+    async def test_payload_includes_dialog(self):
+        """When dialog is provided, it must appear in the entity payload."""
+        hass = _make_mock_hass()
+        handler = await _setup_entry_and_get_handler(hass)
+
+        dialog_def = {
+            "intent": "String",
+            "slots": [
+                {"name": "name", "type": "AMAZON.Person", "prompt": "What is your name?"},
+            ],
+            "confirm": True,
+            "confirm_prompt": "Your name is {name}. Correct?",
+        }
+        data = init_mod.SERVICE_SEND_SCHEMA(
+            {
+                "text": "Tell me your name",
+                "suppress_confirmation": False,
+                "dialog": dialog_def,
+            }
+        )
+        await handler(_make_service_call(data))
+
+        set_call = hass.states.async_set.call_args
+        payload = json.loads(set_call.args[1])
+
+        assert payload["dialog"] == dialog_def
+
+    @pytest.mark.asyncio
+    async def test_payload_omits_empty_dialog(self):
+        """No dialog key when not provided — backward compatible."""
+        hass = _make_mock_hass()
+        handler = await _setup_entry_and_get_handler(hass)
+
+        data = init_mod.SERVICE_SEND_SCHEMA(
+            {
+                "text": "Hello",
+                "suppress_confirmation": False,
+            }
+        )
+        await handler(_make_service_call(data))
+
+        set_call = hass.states.async_set.call_args
+        payload = json.loads(set_call.args[1])
+
+        assert "dialog" not in payload

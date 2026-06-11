@@ -88,6 +88,18 @@ def _intent_request(intent_name: str, slots: dict | None = None, locale: str = "
     return body
 
 
+def _intent_request_with_session(
+    intent_name: str,
+    slots: dict | None = None,
+    session_attrs: dict | None = None,
+    locale: str = "en-US",
+) -> dict:
+    """Build an IntentRequest with session attributes (for multi-turn dialog)."""
+    body = _intent_request(intent_name, slots, locale)
+    body["session"] = {"attributes": session_attrs or {}}
+    return body
+
+
 def _session_ended_request(reason: str = "USER_INITIATED") -> dict:
     return {"request": {"type": "SessionEndedRequest", "reason": reason, "locale": "en-US"}}
 
@@ -519,3 +531,213 @@ class TestPersonId:
         r = await sh.handle_alexa_request(hass, body)
         event_data = hass.bus.async_fire.call_args[0][1]
         assert event_data["event_person_id"] == "amzn1.account.ABC"
+
+
+# ---------------------------------------------------------------------------
+# Dialog payload helper
+# ---------------------------------------------------------------------------
+
+_DIALOG_PAYLOAD = {
+    "event": "dialog_evt1",
+    "text": "<speak>Setting a reminder</speak>",
+    "suppress_confirmation": False,
+    "dialog": {
+        "intent": "String",
+        "slots": [
+            {"name": "reminder_text", "type": "AMAZON.Person", "prompt": "What do you want to be reminded of?"},
+            {"name": "reminder_time", "type": "AMAZON.TIME", "prompt": "What time?"},
+        ],
+        "confirm": True,
+        "confirm_prompt": "I'll remind you to {reminder_text} at {reminder_time}. Is that correct?",
+    },
+}
+
+_DIALOG_PAYLOAD_NO_CONFIRM = {
+    "event": "dialog_evt2",
+    "text": "Tell me something",
+    "suppress_confirmation": False,
+    "dialog": {
+        "intent": "String",
+        "slots": [
+            {"name": "the_name", "type": "AMAZON.Person", "prompt": "What is your name?"},
+        ],
+        "confirm": False,
+    },
+}
+
+
+# ---------------------------------------------------------------------------
+# Dialog flow tests
+# ---------------------------------------------------------------------------
+
+
+class TestDialogFlow:
+    """Tests for multi-turn dialog management."""
+
+    @pytest.mark.asyncio
+    async def test_dialog_launch_elicits_first_slot(self):
+        """LaunchRequest with dialog payload should return ElicitSlot for the first slot."""
+        hass = _make_ha(_DIALOG_PAYLOAD)
+        r = await sh.handle_alexa_request(hass, _launch_request())
+
+        resp = r["response"]
+        assert resp["shouldEndSession"] is False
+        # Should have an ElicitSlot directive for the first slot
+        directives = resp["directives"]
+        assert len(directives) == 1
+        assert directives[0]["type"] == "Dialog.ElicitSlot"
+        assert directives[0]["slotToElicit"] == "reminder_text"
+        # Speech should be the first slot's prompt
+        assert resp["outputSpeech"]["text"] == "What do you want to be reminded of?"
+
+    @pytest.mark.asyncio
+    async def test_dialog_collects_second_slot(self):
+        """After first slot is filled, ElicitSlot for second slot with session attrs."""
+        hass = _make_ha(_DIALOG_PAYLOAD)
+        body = _intent_request_with_session(
+            "String",
+            slots={"reminder_text": {"value": "buy milk"}},
+            session_attrs={"_dialog_slots": {"reminder_text": "buy milk"}},
+        )
+        r = await sh.handle_alexa_request(hass, body)
+
+        resp = r["response"]
+        assert resp["shouldEndSession"] is False
+        directives = resp["directives"]
+        assert directives[0]["type"] == "Dialog.ElicitSlot"
+        assert directives[0]["slotToElicit"] == "reminder_time"
+        assert resp["outputSpeech"]["text"] == "What time?"
+        # Session attributes should carry both collected slots
+        assert r["sessionAttributes"]["_dialog_slots"]["reminder_text"] == "buy milk"
+
+    @pytest.mark.asyncio
+    async def test_dialog_all_slots_fire_event_no_confirm(self):
+        """Without confirm, all slots collected fires the event immediately."""
+        hass = _make_ha(_DIALOG_PAYLOAD_NO_CONFIRM)
+        body = _intent_request_with_session(
+            "String",
+            slots={"the_name": {"value": "Alice"}},
+            session_attrs={"_dialog_slots": {"the_name": "Alice"}},
+        )
+        r = await sh.handle_alexa_request(hass, body)
+
+        # Event should be fired with collected slot data
+        hass.bus.async_fire.assert_called_once()
+        event_data = hass.bus.async_fire.call_args[0][1]
+        assert event_data["event_id"] == "dialog_evt2"
+        assert event_data["event_response_type"] == sh.RESPONSE_DIALOG
+        collected = json.loads(event_data["event_response"])
+        assert collected["the_name"] == "Alice"
+        # Session should end
+        assert r["response"]["shouldEndSession"] is True
+        assert r["response"]["outputSpeech"]["text"] == "Okay"
+
+    @pytest.mark.asyncio
+    async def test_dialog_with_confirmation(self):
+        """When confirm=true and all slots collected, ConfirmIntent is returned."""
+        hass = _make_ha(_DIALOG_PAYLOAD)
+        body = _intent_request_with_session(
+            "String",
+            slots={
+                "reminder_text": {"value": "buy milk"},
+                "reminder_time": {"value": "14:30"},
+            },
+            session_attrs={"_dialog_slots": {"reminder_text": "buy milk", "reminder_time": "14:30"}},
+        )
+        r = await sh.handle_alexa_request(hass, body)
+
+        resp = r["response"]
+        assert resp["shouldEndSession"] is False
+        directives = resp["directives"]
+        assert directives[0]["type"] == "Dialog.ConfirmIntent"
+        # Confirm prompt should have slot values substituted
+        assert "buy milk" in resp["outputSpeech"]["text"]
+        assert "14:30" in resp["outputSpeech"]["text"]
+        # Session attributes should include _awaiting_confirm
+        assert r["sessionAttributes"]["_awaiting_confirm"] is True
+
+    @pytest.mark.asyncio
+    async def test_dialog_confirm_yes_fires_event(self):
+        """YES after ConfirmIntent should fire the event with all collected data."""
+        hass = _make_ha(_DIALOG_PAYLOAD)
+        body = _intent_request_with_session(
+            "AMAZON.YesIntent",
+            session_attrs={
+                "_dialog_slots": {"reminder_text": "buy milk", "reminder_time": "14:30"},
+                "_awaiting_confirm": True,
+            },
+        )
+        r = await sh.handle_alexa_request(hass, body)
+
+        hass.bus.async_fire.assert_called_once()
+        event_data = hass.bus.async_fire.call_args[0][1]
+        assert event_data["event_response_type"] == sh.RESPONSE_DIALOG
+        collected = json.loads(event_data["event_response"])
+        assert collected["reminder_text"] == "buy milk"
+        assert collected["reminder_time"] == "14:30"
+        assert r["response"]["shouldEndSession"] is True
+        assert r["response"]["outputSpeech"]["text"] == "Okay"
+
+    @pytest.mark.asyncio
+    async def test_dialog_confirm_no_restarts(self):
+        """NO after ConfirmIntent should re-elicit the first slot."""
+        hass = _make_ha(_DIALOG_PAYLOAD)
+        body = _intent_request_with_session(
+            "AMAZON.NoIntent",
+            session_attrs={
+                "_dialog_slots": {"reminder_text": "buy milk", "reminder_time": "14:30"},
+                "_awaiting_confirm": True,
+            },
+        )
+        r = await sh.handle_alexa_request(hass, body)
+
+        resp = r["response"]
+        assert resp["shouldEndSession"] is False
+        directives = resp["directives"]
+        assert directives[0]["type"] == "Dialog.ElicitSlot"
+        assert directives[0]["slotToElicit"] == "reminder_text"
+        # Collected slots should be cleared
+        assert r["sessionAttributes"]["_dialog_slots"] == {}
+
+    @pytest.mark.asyncio
+    async def test_dialog_backward_compat(self):
+        """No dialog key in payload → existing single-turn behavior unchanged."""
+        hass = _make_ha({"event": "evt_compat", "text": "Take the pill?", "suppress_confirmation": False})
+        r = await sh.handle_alexa_request(hass, _launch_request())
+
+        # Should behave exactly like the old single-turn flow
+        assert r["response"]["outputSpeech"]["text"] == "Take the pill?"
+        assert r["response"]["shouldEndSession"] is False
+        # No directives
+        assert "directives" not in r["response"]
+
+    @pytest.mark.asyncio
+    async def test_dialog_session_attributes_persist(self):
+        """Session attributes carry collected slots across turns."""
+        hass = _make_ha(_DIALOG_PAYLOAD)
+        # First turn: only first slot filled
+        body = _intent_request_with_session(
+            "String",
+            slots={"reminder_text": {"value": "call mom"}},
+            session_attrs={"_dialog_slots": {"reminder_text": "call mom"}},
+        )
+        r = await sh.handle_alexa_request(hass, body)
+
+        # Response should carry the collected slot in session attributes
+        assert r["sessionAttributes"]["_dialog_slots"]["reminder_text"] == "call mom"
+
+    @pytest.mark.asyncio
+    async def test_dialog_suppress_confirmation(self):
+        """When suppress_confirmation is true, dialog completion should not speak."""
+        payload = dict(_DIALOG_PAYLOAD_NO_CONFIRM)
+        payload["suppress_confirmation"] = True
+        hass = _make_ha(payload)
+        body = _intent_request_with_session(
+            "String",
+            slots={"the_name": {"value": "Bob"}},
+            session_attrs={"_dialog_slots": {"the_name": "Bob"}},
+        )
+        r = await sh.handle_alexa_request(hass, body)
+
+        hass.bus.async_fire.assert_called_once()
+        assert "outputSpeech" not in r["response"]
