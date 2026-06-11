@@ -49,11 +49,23 @@ from custom_components.alexa_actions import skill_handler as sh  # noqa: E402
 _BLUEPRINT_PATH = "blueprints/alexa_actions_notification.yaml"
 
 
+def _read_payload_from_set_call(set_call) -> dict:
+    """Read the active notification payload from a states.async_set call.
+
+    The service now stores a JSON array (queue), so we unwrap and return
+    the last appended item (the new notification).
+    """
+    stored = json.loads(set_call.args[1])
+    assert isinstance(stored, list), f"Expected list, got {type(stored)}"
+    return stored[-1]
+
+
 def _make_mock_hass() -> MagicMock:
     """Build a mock HomeAssistant suitable for async_setup_entry."""
     hass = MagicMock()
     hass.data = {}
     hass.states.async_set = MagicMock()
+    hass.states.get.return_value = None  # empty entity by default
     hass.bus.async_listen = MagicMock(return_value=MagicMock())
     hass.http = MagicMock()
     hass.http.register_view = MagicMock()
@@ -170,7 +182,7 @@ class TestPayloadContract:
 
         set_call = hass.states.async_set.call_args
         entity_id = set_call.args[0]
-        payload = json.loads(set_call.args[1])
+        payload = _read_payload_from_set_call(set_call)
 
         assert entity_id == sh.INPUT_TEXT_ENTITY
         assert payload["text"] == "Did you take the pill?"
@@ -192,7 +204,7 @@ class TestPayloadContract:
         await handler(_make_service_call(data))
 
         set_call = hass.states.async_set.call_args
-        payload = json.loads(set_call.args[1])
+        payload = _read_payload_from_set_call(set_call)
 
         assert "reprompt" not in payload
 
@@ -212,7 +224,7 @@ class TestPayloadContract:
         await handler(_make_service_call(data))
 
         set_call = hass.states.async_set.call_args
-        payload = json.loads(set_call.args[1])
+        payload = _read_payload_from_set_call(set_call)
 
         assert payload["options"] == ["pizza", "pasta", "salad"]
 
@@ -394,7 +406,7 @@ class TestDialogContract:
         await handler(_make_service_call(data))
 
         set_call = hass.states.async_set.call_args
-        payload = json.loads(set_call.args[1])
+        payload = _read_payload_from_set_call(set_call)
 
         assert payload["dialog"] == dialog_def
 
@@ -413,6 +425,225 @@ class TestDialogContract:
         await handler(_make_service_call(data))
 
         set_call = hass.states.async_set.call_args
-        payload = json.loads(set_call.args[1])
+        payload = _read_payload_from_set_call(set_call)
 
         assert "dialog" not in payload
+
+
+# ===========================================================================
+# Test class: Queue storage contract
+# ===========================================================================
+
+
+class TestQueueStorageContract:
+    """Verify service layer stores notifications as a JSON array queue."""
+
+    @pytest.mark.asyncio
+    async def test_send_stores_queue_array(self):
+        """Service call should write a JSON array to the entity."""
+        hass = _make_mock_hass()
+        handler = await _setup_entry_and_get_handler(hass)
+
+        data = init_mod.SERVICE_SEND_SCHEMA(
+            {
+                "text": "First question?",
+                "suppress_confirmation": False,
+            }
+        )
+        await handler(_make_service_call(data))
+
+        set_call = hass.states.async_set.call_args
+        stored = json.loads(set_call.args[1])
+        assert isinstance(stored, list)
+        assert len(stored) == 1
+        assert stored[0]["text"] == "First question?"
+
+    @pytest.mark.asyncio
+    async def test_send_appends_to_existing_queue(self):
+        """Second service call appends to the existing queue."""
+        hass = _make_mock_hass()
+        handler = await _setup_entry_and_get_handler(hass)
+
+        # First notification — entity starts empty
+        data1 = init_mod.SERVICE_SEND_SCHEMA(
+            {"text": "First?", "suppress_confirmation": False}
+        )
+        await handler(_make_service_call(data1))
+
+        first_stored = json.loads(hass.states.async_set.call_args.args[1])
+
+        # Set up mock to return first queue for second call
+        mock_state = MagicMock()
+        mock_state.state = json.dumps(first_stored)
+        hass.states.get.return_value = mock_state
+
+        # Second notification — should append
+        data2 = init_mod.SERVICE_SEND_SCHEMA(
+            {"text": "Second?", "suppress_confirmation": False}
+        )
+        await handler(_make_service_call(data2))
+
+        second_stored = json.loads(hass.states.async_set.call_args.args[1])
+        assert isinstance(second_stored, list)
+        assert len(second_stored) == 2
+        assert second_stored[0]["text"] == "First?"
+        assert second_stored[1]["text"] == "Second?"
+
+    @pytest.mark.asyncio
+    async def test_send_includes_alexa_device_in_payload(self):
+        """Each queue item includes the target alexa_device."""
+        hass = _make_mock_hass()
+        handler = await _setup_entry_and_get_handler(hass)
+
+        data = init_mod.SERVICE_SEND_SCHEMA(
+            {"text": "Test?", "suppress_confirmation": False}
+        )
+        await handler(_make_service_call(data, "media_player.kitchen"))
+
+        stored = json.loads(hass.states.async_set.call_args.args[1])
+        assert stored[0]["alexa_device"] == "media_player.kitchen"
+
+    @pytest.mark.asyncio
+    async def test_send_wraps_legacy_dict(self):
+        """If entity has a legacy single-dict state, it gets wrapped."""
+        hass = _make_mock_hass()
+        handler = await _setup_entry_and_get_handler(hass)
+
+        # Pre-set entity with a legacy single-dict state
+        legacy_payload = json.dumps({
+            "event": "old_evt",
+            "text": "Old question?",
+            "suppress_confirmation": "false",
+        })
+        mock_state = MagicMock()
+        mock_state.state = legacy_payload
+        hass.states.get.return_value = mock_state
+
+        data = init_mod.SERVICE_SEND_SCHEMA(
+            {"text": "New question?", "suppress_confirmation": False}
+        )
+        await handler(_make_service_call(data))
+
+        stored = json.loads(hass.states.async_set.call_args.args[1])
+        assert isinstance(stored, list)
+        assert len(stored) == 2
+        assert stored[0]["event"] == "old_evt"  # legacy item wrapped
+        assert stored[1]["text"] == "New question?"  # new item appended
+
+    @pytest.mark.asyncio
+    async def test_queue_first_item_triggers_play_media(self):
+        """When queue was empty, play_media should be called."""
+        hass = _make_mock_hass()
+        handler = await _setup_entry_and_get_handler(hass)
+
+        data = init_mod.SERVICE_SEND_SCHEMA(
+            {"text": "First?", "suppress_confirmation": False}
+        )
+        await handler(_make_service_call(data))
+
+        hass.services.async_call.assert_called_once()
+        call_args = hass.services.async_call.call_args
+        assert call_args.args[0] == "media_player"
+        assert call_args.args[1] == "play_media"
+
+    @pytest.mark.asyncio
+    async def test_queue_second_item_does_not_trigger_play_media(self):
+        """When queue already has items, play_media should NOT be called."""
+        hass = _make_mock_hass()
+        handler = await _setup_entry_and_get_handler(hass)
+
+        # First notification
+        data1 = init_mod.SERVICE_SEND_SCHEMA(
+            {"text": "First?", "suppress_confirmation": False}
+        )
+        await handler(_make_service_call(data1))
+
+        # Reset to track second call
+        first_stored = json.loads(hass.states.async_set.call_args.args[1])
+        mock_state = MagicMock()
+        mock_state.state = json.dumps(first_stored)
+        hass.states.get.return_value = mock_state
+        hass.services.async_call.reset_mock()
+
+        # Second notification — should NOT call play_media
+        data2 = init_mod.SERVICE_SEND_SCHEMA(
+            {"text": "Second?", "suppress_confirmation": False}
+        )
+        await handler(_make_service_call(data2))
+
+        hass.services.async_call.assert_not_called()
+
+
+class TestEndToEndQueuePipeline:
+    """Full pipeline: service call queue -> entity state -> handler -> response -> advance."""
+
+    @pytest.mark.asyncio
+    async def test_queue_pipeline_full(self):
+        """Two notifications queued, first answered, second becomes active."""
+        # Step 1: First service call
+        hass = _make_mock_hass()
+        handler = await _setup_entry_and_get_handler(hass)
+
+        data1 = init_mod.SERVICE_SEND_SCHEMA(
+            {
+                "text": "Did you take the pill?",
+                "event_id": "pill_q",
+                "suppress_confirmation": False,
+            }
+        )
+        await handler(_make_service_call(data1))
+        queue_json = hass.states.async_set.call_args.args[1]
+
+        # Step 2: Second service call (append)
+        mock_state = MagicMock()
+        mock_state.state = queue_json
+        hass.states.get.return_value = mock_state
+
+        data2 = init_mod.SERVICE_SEND_SCHEMA(
+            {
+                "text": "Did you lock the door?",
+                "event_id": "door_q",
+                "suppress_confirmation": False,
+            }
+        )
+        await handler(_make_service_call(data2))
+        queue_json = hass.states.async_set.call_args.args[1]
+        queue = json.loads(queue_json)
+        assert len(queue) == 2
+
+        # Step 3: Handler reads first item
+        hass2 = MagicMock()
+        mock_state2 = MagicMock()
+        mock_state2.state = queue_json
+        hass2.states.get.return_value = mock_state2
+
+        response = await sh.handle_alexa_request(
+            hass2,
+            {"request": {"type": "LaunchRequest", "locale": "en-US"}},
+        )
+        assert response["response"]["outputSpeech"]["text"] == "Did you take the pill?"
+
+        # Step 4: User says yes — handler fires event, advances queue
+        response = await sh.handle_alexa_request(
+            hass2,
+            {"request": {"type": "IntentRequest", "intent": {"name": "AMAZON.YesIntent"}, "locale": "en-US"},
+             "context": {"System": {}}},
+        )
+        assert response["response"]["shouldEndSession"] is True
+
+        # Queue should have been advanced
+        hass2.states.async_set.assert_called()
+        remaining = json.loads(hass2.states.async_set.call_args.args[1])
+        assert len(remaining) == 1
+        assert remaining[0]["event"] == "door_q"
+
+        # Step 5: Handler reads second item (now first)
+        mock_state3 = MagicMock()
+        mock_state3.state = json.dumps(remaining)
+        hass2.states.get.return_value = mock_state3
+
+        response = await sh.handle_alexa_request(
+            hass2,
+            {"request": {"type": "LaunchRequest", "locale": "en-US"}},
+        )
+        assert response["response"]["outputSpeech"]["text"] == "Did you lock the door?"

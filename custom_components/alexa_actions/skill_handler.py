@@ -225,7 +225,12 @@ def _parse_iso_duration(duration: str) -> float:
 
 
 def _get_ha_state(hass: HomeAssistant) -> HaState | None:
-    """Read the actionable-notification state directly from HA."""
+    """Read the actionable-notification state directly from HA.
+
+    Supports both queue (JSON array) and legacy single-dict formats.
+    When the state is an array, the first element is the active
+    notification; the rest are queued for sequential delivery.
+    """
     state = hass.states.get(INPUT_TEXT_ENTITY)
     if state is None:
         _LOGGER.warning("Entity %s not found", INPUT_TEXT_ENTITY)
@@ -236,9 +241,19 @@ def _get_ha_state(hass: HomeAssistant) -> HaState | None:
         _LOGGER.error("Cannot parse state of %s: %s", INPUT_TEXT_ENTITY, state.state)
         return None
 
+    # Unwrap queue format: first element is the active notification.
+    if isinstance(decoded, list):
+        if not decoded:
+            return None
+        notification = decoded[0]
+    elif isinstance(decoded, dict):
+        notification = decoded  # backward compat
+    else:
+        return None
+
     dialog = None
-    if decoded.get("dialog"):
-        raw = decoded["dialog"]
+    if notification.get("dialog"):
+        raw = notification["dialog"]
         dialog = DialogDefinition(
             intent=raw.get("intent", "String"),
             slots=[DialogSlot(**s) for s in raw.get("slots", [])],
@@ -247,13 +262,38 @@ def _get_ha_state(hass: HomeAssistant) -> HaState | None:
         )
 
     return HaState(
-        event_id=decoded.get("event"),
-        reprompt=decoded.get("reprompt"),
-        suppress_confirmation=_string_to_bool(decoded.get("suppress_confirmation")),
-        text=decoded.get("text"),
+        event_id=notification.get("event"),
+        reprompt=notification.get("reprompt"),
+        suppress_confirmation=_string_to_bool(notification.get("suppress_confirmation")),
+        text=notification.get("text"),
         dialog=dialog,
-        options=decoded.get("options"),
+        options=notification.get("options"),
     )
+
+
+async def _advance_queue(hass: HomeAssistant) -> None:
+    """Remove the completed notification and advance the queue.
+
+    Pops the first element from the JSON array stored in the input_text
+    entity, making the next queued notification (if any) the active one.
+    Falls back to clearing a legacy single-dict state.
+    """
+    state = hass.states.get(INPUT_TEXT_ENTITY)
+    if state is None:
+        return
+    try:
+        decoded = json.loads(state.state)
+    except (json.JSONDecodeError, TypeError):
+        return
+    if isinstance(decoded, list) and decoded:
+        decoded.pop(0)
+        hass.states.async_set(INPUT_TEXT_ENTITY, json.dumps(decoded))
+        _LOGGER.debug(
+            "Queue advanced, %d notification(s) remaining", len(decoded),
+        )
+    elif isinstance(decoded, dict):
+        # Legacy single-notification format — clear it.
+        hass.states.async_set(INPUT_TEXT_ENTITY, "[]")
 
 
 def _post_ha_event(
@@ -706,23 +746,38 @@ async def handle_alexa_request(hass: HomeAssistant, request_body: dict) -> dict:
             # regardless of the intent name.
             session_attrs = _get_session_attributes(request_body)
             if session_attrs.get("_dialog_slots") is not None:
-                return await _handle_dialog_turn(hass, request_body, locale_strings)
-
-            # YES/NO after a ConfirmIntent also signals dialog continuation
-            if intent_name in ("AMAZON.YesIntent", "AMAZON.NoIntent"):
+                result = await _handle_dialog_turn(hass, request_body, locale_strings)
+            elif intent_name in ("AMAZON.YesIntent", "AMAZON.NoIntent"):
                 if session_attrs.get("_awaiting_confirm"):
-                    return await _handle_dialog_turn(hass, request_body, locale_strings)
+                    result = await _handle_dialog_turn(hass, request_body, locale_strings)
+                else:
+                    handler = _INTENT_HANDLERS.get(intent_name)
+                    if handler:
+                        result = await handler(hass, request_body, locale_strings)
+                    else:
+                        _LOGGER.warning("Unhandled intent: %s", intent_name)
+                        result = _build_response()
+            else:
+                # Standard single-turn intent dispatch
+                handler = _INTENT_HANDLERS.get(intent_name)
+                if handler:
+                    result = await handler(hass, request_body, locale_strings)
+                else:
+                    _LOGGER.warning("Unhandled intent: %s", intent_name)
+                    result = _build_response()
 
-            # Standard single-turn intent dispatch
-            handler = _INTENT_HANDLERS.get(intent_name)
-            if handler:
-                return await handler(hass, request_body, locale_strings)
-            _LOGGER.warning("Unhandled intent: %s", intent_name)
-            return _build_response()
+            # Advance queue when session ends (notification answered).
+            if result.get("response", {}).get("shouldEndSession", False):
+                await _advance_queue(hass)
+            return result
 
         handler = _REQUEST_TYPE_HANDLERS.get(req_type)
         if handler:
-            return await handler(hass, request_body, locale_strings)
+            result = await handler(hass, request_body, locale_strings)
+            # SessionEndedRequest should also advance the queue.
+            if req_type == "SessionEndedRequest":
+                await _advance_queue(hass)
+            return result
 
         _LOGGER.warning("Unhandled request type: %s", req_type)
         return _build_response()

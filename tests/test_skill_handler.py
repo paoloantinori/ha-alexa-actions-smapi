@@ -782,3 +782,267 @@ class TestDialogFlow:
 
         hass.bus.async_fire.assert_called_once()
         assert "outputSpeech" not in r["response"]
+
+
+# ---------------------------------------------------------------------------
+# Queue helpers
+# ---------------------------------------------------------------------------
+
+
+def _make_queue_ha(queue: list[dict]) -> _MockHA:
+    """Create a mock HA with a JSON-array queue state."""
+    hass = _MockHA()
+    mock_state = MagicMock()
+    mock_state.state = json.dumps(queue)
+    hass.states.get.return_value = mock_state
+    return hass
+
+
+# ---------------------------------------------------------------------------
+# Queue tests
+# ---------------------------------------------------------------------------
+
+
+class TestQueueGetHaState:
+    """_get_ha_state reads the first element from a queue (list)."""
+
+    def test_queue_reads_first_item(self):
+        queue = [
+            {"event": "evt1", "text": "First?", "suppress_confirmation": False},
+            {"event": "evt2", "text": "Second?", "suppress_confirmation": False},
+            {"event": "evt3", "text": "Third?", "suppress_confirmation": False},
+        ]
+        hass = _make_queue_ha(queue)
+        ha_state = sh._get_ha_state(hass)
+        assert ha_state is not None
+        assert ha_state.event_id == "evt1"
+        assert ha_state.text == "First?"
+
+    def test_empty_queue_returns_none(self):
+        hass = _make_queue_ha([])
+        ha_state = sh._get_ha_state(hass)
+        assert ha_state is None
+
+    def test_queue_backward_compat_single_dict(self):
+        """Single dict (legacy format) still works."""
+        hass = _make_ha({"event": "evt_legacy", "text": "Legacy?", "suppress_confirmation": False})
+        ha_state = sh._get_ha_state(hass)
+        assert ha_state is not None
+        assert ha_state.event_id == "evt_legacy"
+        assert ha_state.text == "Legacy?"
+
+    def test_queue_preserves_reprompt(self):
+        queue = [
+            {"event": "evt_r", "text": "Q?", "reprompt": "Try again", "suppress_confirmation": False},
+        ]
+        hass = _make_queue_ha(queue)
+        ha_state = sh._get_ha_state(hass)
+        assert ha_state.reprompt == "Try again"
+
+    def test_queue_preserves_options(self):
+        queue = [
+            {"event": "evt_o", "text": "Pick one", "suppress_confirmation": False,
+             "options": ["A", "B", "C"]},
+        ]
+        hass = _make_queue_ha(queue)
+        ha_state = sh._get_ha_state(hass)
+        assert ha_state.options == ["A", "B", "C"]
+
+    def test_queue_preserves_dialog(self):
+        queue = [_DIALOG_PAYLOAD]
+        hass = _make_queue_ha(queue)
+        ha_state = sh._get_ha_state(hass)
+        assert ha_state.dialog is not None
+        assert ha_state.dialog.intent == "String"
+        assert len(ha_state.dialog.slots) == 2
+
+
+class TestQueueAdvance:
+    """_advance_queue removes the first element and updates state."""
+
+    @pytest.mark.asyncio
+    async def test_advance_removes_first(self):
+        queue = [
+            {"event": "evt1", "text": "First?", "suppress_confirmation": False},
+            {"event": "evt2", "text": "Second?", "suppress_confirmation": False},
+        ]
+        hass = _make_queue_ha(queue)
+        await sh._advance_queue(hass)
+
+        # states.async_set should have been called with queue minus first
+        hass.states.async_set.assert_called_once()
+        updated = json.loads(hass.states.async_set.call_args.args[1])
+        assert len(updated) == 1
+        assert updated[0]["event"] == "evt2"
+
+    @pytest.mark.asyncio
+    async def test_advance_empty_after_all_popped(self):
+        queue = [
+            {"event": "evt_only", "text": "Only one", "suppress_confirmation": False},
+        ]
+        hass = _make_queue_ha(queue)
+        await sh._advance_queue(hass)
+
+        hass.states.async_set.assert_called_once()
+        updated = json.loads(hass.states.async_set.call_args.args[1])
+        assert updated == []
+
+    @pytest.mark.asyncio
+    async def test_advance_empty_queue_noop(self):
+        """Advancing an already-empty queue should not error."""
+        hass = _make_queue_ha([])
+        await sh._advance_queue(hass)
+        # No state update needed — method returns early
+        hass.states.async_set.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_advance_legacy_dict_clears_to_empty(self):
+        """Legacy single-dict state is cleared to []."""
+        hass = _make_ha({"event": "evt_legacy", "text": "Old?", "suppress_confirmation": False})
+        await sh._advance_queue(hass)
+
+        hass.states.async_set.assert_called_once()
+        updated = json.loads(hass.states.async_set.call_args.args[1])
+        assert updated == []
+
+    @pytest.mark.asyncio
+    async def test_advance_no_entity_noop(self):
+        """No entity at all — should not error."""
+        hass = _MockHA()
+        hass.states.get.return_value = None
+        await sh._advance_queue(hass)
+        hass.states.async_set.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_advance_malformed_json_noop(self):
+        """Malformed JSON in state — should not error."""
+        hass = _MockHA()
+        mock_state = MagicMock()
+        mock_state.state = "not-json"
+        hass.states.get.return_value = mock_state
+        await sh._advance_queue(hass)
+        hass.states.async_set.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_advance_three_items_twice(self):
+        """Advance twice on a 3-item queue leaves the third item."""
+        queue = [
+            {"event": "a", "text": "A", "suppress_confirmation": False},
+            {"event": "b", "text": "B", "suppress_confirmation": False},
+            {"event": "c", "text": "C", "suppress_confirmation": False},
+        ]
+        hass = _make_queue_ha(queue)
+
+        await sh._advance_queue(hass)
+        remaining = json.loads(hass.states.async_set.call_args.args[1])
+        assert len(remaining) == 2
+        assert remaining[0]["event"] == "b"
+
+        # Re-set the mock state for the next advance
+        mock_state = MagicMock()
+        mock_state.state = json.dumps(remaining)
+        hass.states.get.return_value = mock_state
+
+        await sh._advance_queue(hass)
+        remaining2 = json.loads(hass.states.async_set.call_args.args[1])
+        assert len(remaining2) == 1
+        assert remaining2[0]["event"] == "c"
+
+
+class TestQueueEventCorrelation:
+    """Verify the correct event_id is fired for the active queue item."""
+
+    @pytest.mark.asyncio
+    async def test_first_item_event_id_in_yes_response(self):
+        queue = [
+            {"event": "evt_active", "text": "Active?", "suppress_confirmation": False},
+            {"event": "evt_queued", "text": "Queued?", "suppress_confirmation": False},
+        ]
+        hass = _make_queue_ha(queue)
+        await sh.handle_alexa_request(hass, _intent_request("AMAZON.YesIntent"))
+
+        event_data = hass.bus.async_fire.call_args[0][1]
+        assert event_data["event_id"] == "evt_active"
+
+    @pytest.mark.asyncio
+    async def test_after_advance_second_item_event_id(self):
+        queue = [
+            {"event": "evt_first", "text": "First?", "suppress_confirmation": False},
+            {"event": "evt_second", "text": "Second?", "suppress_confirmation": False},
+        ]
+        hass = _make_queue_ha(queue)
+
+        # Advance removes first, second becomes active
+        await sh._advance_queue(hass)
+        remaining = json.loads(hass.states.async_set.call_args.args[1])
+
+        # Re-set mock state for the handler to read
+        mock_state = MagicMock()
+        mock_state.state = json.dumps(remaining)
+        hass.states.get.return_value = mock_state
+
+        await sh.handle_alexa_request(hass, _intent_request("AMAZON.YesIntent"))
+        event_data = hass.bus.async_fire.call_args[0][1]
+        assert event_data["event_id"] == "evt_second"
+
+
+class TestQueueAdvanceInDispatcher:
+    """Verify handle_alexa_request advances the queue on session end."""
+
+    @pytest.mark.asyncio
+    async def test_yes_intent_advances_queue(self):
+        """YES response (shouldEndSession=true) should advance the queue."""
+        queue = [
+            {"event": "evt1", "text": "Q?", "suppress_confirmation": False},
+            {"event": "evt2", "text": "Next?", "suppress_confirmation": False},
+        ]
+        hass = _make_queue_ha(queue)
+        await sh.handle_alexa_request(hass, _intent_request("AMAZON.YesIntent"))
+
+        # Queue should have been advanced (first item removed)
+        hass.states.async_set.assert_called()
+        updated = json.loads(hass.states.async_set.call_args.args[1])
+        assert len(updated) == 1
+        assert updated[0]["event"] == "evt2"
+
+    @pytest.mark.asyncio
+    async def test_no_intent_advances_queue(self):
+        """NO response (shouldEndSession=true) should advance the queue."""
+        queue = [
+            {"event": "evt1", "text": "Q?", "suppress_confirmation": False},
+            {"event": "evt2", "text": "Next?", "suppress_confirmation": False},
+        ]
+        hass = _make_queue_ha(queue)
+        await sh.handle_alexa_request(hass, _intent_request("AMAZON.NoIntent"))
+
+        hass.states.async_set.assert_called()
+        updated = json.loads(hass.states.async_set.call_args.args[1])
+        assert len(updated) == 1
+        assert updated[0]["event"] == "evt2"
+
+    @pytest.mark.asyncio
+    async def test_launch_does_not_advance(self):
+        """LaunchRequest keeps session open — should NOT advance queue."""
+        queue = [
+            {"event": "evt1", "text": "Q?", "suppress_confirmation": False},
+        ]
+        hass = _make_queue_ha(queue)
+        await sh.handle_alexa_request(hass, _launch_request())
+
+        # LaunchRequest returns shouldEndSession=false → no advance
+        hass.states.async_set.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_session_ended_advances_queue(self):
+        """SessionEndedRequest should advance the queue."""
+        queue = [
+            {"event": "evt1", "text": "Q?", "suppress_confirmation": False},
+            {"event": "evt2", "text": "Next?", "suppress_confirmation": False},
+        ]
+        hass = _make_queue_ha(queue)
+        await sh.handle_alexa_request(hass, _session_ended_request("USER_INITIATED"))
+
+        hass.states.async_set.assert_called()
+        updated = json.loads(hass.states.async_set.call_args.args[1])
+        assert len(updated) == 1
+        assert updated[0]["event"] == "evt2"

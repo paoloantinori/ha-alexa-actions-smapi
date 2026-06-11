@@ -380,3 +380,169 @@ class TestJsonRoundTrip:
         resp = result["response"]
         assert resp["outputSpeech"]["text"] == payload["text"]
         assert resp["reprompt"]["outputSpeech"]["text"] == payload["reprompt"]
+
+
+# ===========================================================================
+# Test class: Queue integration
+# ===========================================================================
+
+
+def _make_queue_ha(queue: list[dict]) -> _MockHA:
+    """Create a mock HA with a JSON-array queue state."""
+    hass = _MockHA()
+    mock_state = MagicMock()
+    mock_state.state = json.dumps(queue)
+    hass.states.get.return_value = mock_state
+    return hass
+
+
+class TestQueueIntegration:
+    """Full-pipeline tests for the notification queue."""
+
+    @pytest.mark.asyncio
+    async def test_queue_launch_reads_first(self):
+        """LaunchRequest reads only the first item from the queue."""
+        queue = [
+            {"event": "q1", "text": "First question?", "suppress_confirmation": False},
+            {"event": "q2", "text": "Second question?", "suppress_confirmation": False},
+        ]
+        hass = _make_queue_ha(queue)
+
+        result = await sh.handle_alexa_request(hass, _alexa_launch_request())
+
+        resp = result["response"]
+        assert resp["outputSpeech"]["text"] == "First question?"
+        assert resp["shouldEndSession"] is False
+
+    @pytest.mark.asyncio
+    async def test_queue_yes_advances(self):
+        """YES intent on a queued notification advances the queue."""
+        queue = [
+            {"event": "q1", "text": "First?", "suppress_confirmation": False},
+            {"event": "q2", "text": "Second?", "suppress_confirmation": False},
+        ]
+        hass = _make_queue_ha(queue)
+
+        result = await sh.handle_alexa_request(
+            hass, _alexa_intent_request("AMAZON.YesIntent")
+        )
+
+        # Event should be for the first item
+        event_data = hass.bus.async_fire.call_args[0][1]
+        assert event_data["event_id"] == "q1"
+
+        # Queue should have been advanced
+        hass.states.async_set.assert_called()
+        remaining = json.loads(hass.states.async_set.call_args.args[1])
+        assert len(remaining) == 1
+        assert remaining[0]["event"] == "q2"
+
+    @pytest.mark.asyncio
+    async def test_queue_empty_queue_launch(self):
+        """Empty queue produces no-notifications message."""
+        hass = _make_queue_ha([])
+
+        result = await sh.handle_alexa_request(hass, _alexa_launch_request())
+
+        resp = result["response"]
+        assert resp["outputSpeech"]["text"] == "No pending notifications"
+        assert resp["shouldEndSession"] is True
+
+    @pytest.mark.asyncio
+    async def test_queue_backward_compat_launch(self):
+        """Legacy single-dict state still works end-to-end."""
+        hass = _make_ha({"event": "legacy", "text": "Legacy question?", "suppress_confirmation": False})
+
+        result = await sh.handle_alexa_request(hass, _alexa_launch_request())
+
+        resp = result["response"]
+        assert resp["outputSpeech"]["text"] == "Legacy question?"
+        assert resp["shouldEndSession"] is False
+
+    @pytest.mark.asyncio
+    async def test_queue_backward_compat_yes_advances(self):
+        """YES on legacy single-dict clears state to []."""
+        hass = _make_ha({"event": "legacy", "text": "Q?", "suppress_confirmation": False})
+
+        await sh.handle_alexa_request(
+            hass, _alexa_intent_request("AMAZON.YesIntent")
+        )
+
+        hass.states.async_set.assert_called()
+        remaining = json.loads(hass.states.async_set.call_args.args[1])
+        assert remaining == []
+
+    @pytest.mark.asyncio
+    async def test_queue_ssml_first_item(self):
+        """SSML in the first queue item is handled correctly."""
+        ssml = "<speak>First<break time='1s'/>question?</speak>"
+        queue = [
+            {"event": "q_ssml", "text": ssml, "suppress_confirmation": False},
+            {"event": "q2", "text": "Plain second", "suppress_confirmation": False},
+        ]
+        hass = _make_queue_ha(queue)
+
+        result = await sh.handle_alexa_request(hass, _alexa_launch_request())
+
+        resp = result["response"]
+        assert resp["outputSpeech"]["type"] == "SSML"
+        assert resp["outputSpeech"]["ssml"] == ssml
+        assert resp["shouldEndSession"] is False
+
+    @pytest.mark.asyncio
+    async def test_queue_select_with_options_first_item(self):
+        """Select intent resolves options from the first queue item."""
+        queue = [
+            {
+                "event": "q_sel",
+                "text": "Pick one",
+                "suppress_confirmation": False,
+                "options": ["Pizza", "Pasta", "Salad"],
+            },
+            {"event": "q2", "text": "Next?", "suppress_confirmation": False},
+        ]
+        hass = _make_queue_ha(queue)
+
+        body = _alexa_intent_request("Select", {
+            "Selections": {
+                "value": "pizza",
+                "resolutions": {
+                    "resolutionsPerAuthority": [{
+                        "status": {"code": "ER_SUCCESS_MATCH"},
+                        "values": [{"value": {"name": "Pizza"}}],
+                    }],
+                },
+            },
+        })
+
+        result = await sh.handle_alexa_request(hass, body)
+
+        event_data = hass.bus.async_fire.call_args[0][1]
+        assert event_data["event_id"] == "q_sel"
+        assert event_data["event_response"] == "Pizza"
+        assert event_data["event_response_type"] == sh.RESPONSE_SELECT
+
+        # Queue advanced
+        remaining = json.loads(hass.states.async_set.call_args.args[1])
+        assert len(remaining) == 1
+        assert remaining[0]["event"] == "q2"
+
+    @pytest.mark.asyncio
+    async def test_queue_custom_reprompt_first_item(self):
+        """Custom reprompt in first queue item works correctly."""
+        queue = [
+            {
+                "event": "q_rep",
+                "text": "Did you take the pill?",
+                "reprompt": "Say yes or no",
+                "suppress_confirmation": False,
+            },
+        ]
+        hass = _make_queue_ha(queue)
+
+        result = await sh.handle_alexa_request(hass, _alexa_launch_request())
+
+        resp = result["response"]
+        assert resp["outputSpeech"]["text"] == "Did you take the pill?"
+        assert resp["reprompt"]["outputSpeech"]["text"] == "Say yes or no"
+

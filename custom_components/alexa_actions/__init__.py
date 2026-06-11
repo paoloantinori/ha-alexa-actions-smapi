@@ -41,7 +41,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data[DOMAIN][entry.entry_id] = entry.data
 
     async def async_send_notification(call: ServiceCall) -> None:
-        """Handle the alexa_actions.send service call."""
+        """Handle the alexa_actions.send service call.
+
+        Appends the notification to a JSON-array queue stored in the
+        input_text entity.  The first element is the "active" notification;
+        additional elements are queued and delivered sequentially after the
+        active one receives a response.
+
+        Backward compatible: if the existing entity state is a single dict
+        (pre-queue format), it is wrapped into a one-element array before
+        appending.
+        """
         text = call.data["text"]
         # Support both: data.alexa_device (direct YAML) and
         # target.entity_id (blueprints / HA UI service calls).
@@ -66,6 +76,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             "text": text,
             "event": event_id,
             "suppress_confirmation": str(suppress_confirmation).lower(),
+            "alexa_device": alexa_device,
         }
         if options:
             payload["options"] = options
@@ -78,8 +89,29 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if dialog:
             payload["dialog"] = dialog
 
-        # Write payload to input_text entity
-        await _async_set_input_text_state(hass, json.dumps(payload))
+        # --- Queue-based storage ---
+        # Read the current entity state and parse it as a JSON array.
+        # Backward compat: a single dict (pre-queue format) is wrapped.
+        queue: list[dict] = []
+        current_state = hass.states.get(INPUT_TEXT_ENTITY)
+        if current_state and current_state.state:
+            try:
+                decoded = json.loads(current_state.state)
+                if isinstance(decoded, list):
+                    queue = decoded
+                elif isinstance(decoded, dict):
+                    # Legacy single-notification format — wrap in array.
+                    # Inject alexa_device if missing so it can be used for
+                    # auto-trigger when this notification is eventually
+                    # processed after the new one completes.
+                    decoded.setdefault("alexa_device", alexa_device)
+                    queue = [decoded]
+            except (json.JSONDecodeError, TypeError):
+                _LOGGER.warning("Could not parse existing queue state, overwriting")
+
+        was_empty = len(queue) == 0
+        queue.append(payload)
+        await _async_set_input_text_state(hass, json.dumps(queue))
 
         # Dynamic slot update: fire-and-forget SMAPI call to update the
         # Selections slot type with the provided options.  The model build
@@ -116,25 +148,29 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     "SMAPI slot update failed (non-fatal)", exc_info=True,
                 )
 
-        # Trigger Alexa skill via SkillConnections.Launch (direct by ID).
-        # Uses media_content_type "skill" so alexa_media uses its
-        # run_skill() path (POST to /api/behaviors/preview with
-        # Alexa.Operation.SkillConnections.Launch), which sends a
-        # LaunchRequest directly to our HTTPS webhook endpoint.
-        await hass.services.async_call(
-            "media_player",
-            "play_media",
-            {
-                "entity_id": alexa_device,
-                "media_content_id": skill_id,
-                "media_content_type": "skill",
-            },
-            blocking=False,
-        )
-        _LOGGER.info(
-            "Sent actionable notification: event_id=%s, device=%s",
-            event_id, alexa_device,
-        )
+        # Only trigger play_media when the queue was empty (this is the
+        # first / only notification).  When items are already queued, the
+        # auto-trigger in handle_response will invoke subsequent ones.
+        if was_empty:
+            await hass.services.async_call(
+                "media_player",
+                "play_media",
+                {
+                    "entity_id": alexa_device,
+                    "media_content_id": skill_id,
+                    "media_content_type": "skill",
+                },
+                blocking=False,
+            )
+            _LOGGER.info(
+                "Sent actionable notification: event_id=%s, device=%s",
+                event_id, alexa_device,
+            )
+        else:
+            _LOGGER.info(
+                "Queued notification (position %d): event_id=%s, device=%s",
+                len(queue), event_id, alexa_device,
+            )
 
     hass.services.async_register(
         DOMAIN, SERVICE_SEND, async_send_notification, schema=SERVICE_SEND_SCHEMA
@@ -146,13 +182,51 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     @callback
     def handle_response(event) -> None:
-        """Handle response events from the skill handler."""
+        """Handle response events from the skill handler.
+
+        After a notification receives its response, check whether more
+        notifications remain in the queue and trigger the next one.
+        """
         _LOGGER.info(
             "Received Alexa response: event_id=%s, type=%s, response=%s",
             event.data.get("event_id"),
             event.data.get("event_response_type"),
             str(event.data.get("event_response", ""))[:100],
         )
+
+        # Auto-trigger next queued notification.
+        # After _advance_queue removes the completed item, the new first
+        # element (if any) is the next notification to deliver.
+        current = hass.states.get(INPUT_TEXT_ENTITY)
+        if not current or not current.state:
+            return
+        try:
+            queue = json.loads(current.state)
+        except (json.JSONDecodeError, TypeError):
+            return
+        if not isinstance(queue, list) or not queue:
+            return
+
+        next_item = queue[0]
+        device = next_item.get("alexa_device", "")
+        skill_id = entry.data.get(CONF_SKILL_ID, "")
+        if device and skill_id:
+            hass.async_create_task(
+                hass.services.async_call(
+                    "media_player",
+                    "play_media",
+                    {
+                        "entity_id": device,
+                        "media_content_id": skill_id,
+                        "media_content_type": "skill",
+                    },
+                    blocking=False,
+                )
+            )
+            _LOGGER.info(
+                "Auto-triggering next queued notification: event_id=%s, device=%s",
+                next_item.get("event"), device,
+            )
 
     remove_listener = hass.bus.async_listen(EVENT_ALEXA_ACTIONABLE_NOTIFICATION, handle_response)
 
