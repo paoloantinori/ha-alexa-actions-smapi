@@ -53,7 +53,7 @@ NO_NOTIFICATIONS = "NO_NOTIFICATIONS"
 class HaState:
     """Parsed state from the actionable-notification entity."""
 
-    __slots__ = ("event_id", "reprompt", "suppress_confirmation", "text", "dialog")
+    __slots__ = ("event_id", "reprompt", "suppress_confirmation", "text", "dialog", "options")
 
     def __init__(
         self,
@@ -62,12 +62,14 @@ class HaState:
         text: str | None,
         reprompt: str | None = None,
         dialog: DialogDefinition | None = None,
+        options: list[str] | None = None,
     ) -> None:
         self.event_id = event_id
         self.reprompt = reprompt
         self.suppress_confirmation = suppress_confirmation
         self.text = text
         self.dialog = dialog
+        self.options = options
 
 
 @dataclasses.dataclass
@@ -249,6 +251,7 @@ def _get_ha_state(hass: HomeAssistant) -> HaState | None:
         suppress_confirmation=_string_to_bool(decoded.get("suppress_confirmation")),
         text=decoded.get("text"),
         dialog=dialog,
+        options=decoded.get("options"),
     )
 
 
@@ -441,11 +444,26 @@ async def _handle_string(hass: HomeAssistant, body: dict, ls: dict) -> dict:
 
 
 async def _handle_select(hass: HomeAssistant, body: dict, ls: dict) -> dict:
-    """Select intent — resolve slot, fire ResponseSelect, speak selection."""
+    """Select intent — resolve slot, fire ResponseSelect, speak selection.
+
+    Resolution strategy:
+    1. ER_SUCCESS_MATCH from Alexa (slot resolved via interaction model).
+    2. Fallback: case-insensitive match of the raw slot value against the
+       ``options`` list from the notification payload (covers the case
+       where the SMAPI model build has not completed yet).
+    """
     ha_state = _get_ha_state(hass)
     if not ha_state:
         return _build_response()
     selection = _get_resolved_slot_value(body, "Selections")
+    if not selection:
+        # Fallback: match raw slot value against provided options
+        raw = _get_slot_value(body, "Selections")
+        if raw and ha_state.options:
+            for opt in ha_state.options:
+                if opt.lower() == raw.lower():
+                    selection = opt
+                    break
     if not selection:
         raise ValueError("Selection slot value could not be resolved")
     _post_ha_event(hass, ha_state, selection, RESPONSE_SELECT, ls, body)

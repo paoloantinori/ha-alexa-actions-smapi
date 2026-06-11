@@ -10,10 +10,13 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall, callback
 
 from .const import (
+    CONF_LOCALES,
+    CONF_REFRESH_TOKEN,
     CONF_SKILL_ID,
     DOMAIN,
     EVENT_ALEXA_ACTIONABLE_NOTIFICATION,
     INPUT_TEXT_ENTITY,
+    SCOPE_SMAPI,
     SERVICE_SEND,
 )
 
@@ -77,6 +80,41 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         # Write payload to input_text entity
         await _async_set_input_text_state(hass, json.dumps(payload))
+
+        # Dynamic slot update: fire-and-forget SMAPI call to update the
+        # Selections slot type with the provided options.  The model build
+        # on Amazon's side takes 30-180 s; we do NOT wait for it.  If the
+        # build completes before the user speaks, Alexa matches exactly.
+        # Otherwise, skill_handler falls back to text matching.
+        if options:
+            try:
+                from homeassistant.const import CONF_CLIENT_ID, CONF_CLIENT_SECRET
+
+                from .api import LWAClient
+                from .smapi import SMAPI
+
+                refresh_token = entry.data.get(CONF_REFRESH_TOKEN)
+                locales = entry.data.get(CONF_LOCALES, ["en-US"])
+                client_id = entry.data.get(CONF_CLIENT_ID)
+                client_secret = entry.data.get(CONF_CLIENT_SECRET)
+
+                if refresh_token and client_id and client_secret and locales:
+                    lwa = LWAClient(hass, client_id, client_secret)
+                    lwa.set_refresh_token(SCOPE_SMAPI, refresh_token)
+                    smapi_client = SMAPI(lwa)
+                    # Update first locale only (all locales share the slot type)
+                    hass.async_create_task(
+                        smapi_client.async_update_slot_type(
+                            skill_id, locales[0], options,
+                        )
+                    )
+                    _LOGGER.debug(
+                        "Triggered SMAPI slot update for %d options", len(options),
+                    )
+            except Exception:
+                _LOGGER.warning(
+                    "SMAPI slot update failed (non-fatal)", exc_info=True,
+                )
 
         # Trigger Alexa skill via SkillConnections.Launch (direct by ID).
         # Uses media_content_type "skill" so alexa_media uses its

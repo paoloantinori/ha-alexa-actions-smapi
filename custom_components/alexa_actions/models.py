@@ -258,6 +258,25 @@ def get_model(locale: str, invocation_name: str) -> dict:
     }
 
 
+def get_model_with_options(
+    locale: str, invocation_name: str, options: list[str],
+) -> dict:
+    """Return an interaction model with custom Selections slot values.
+
+    Replaces the hardcoded slot values (Option One/Two/Three, Yes, No) with
+    the caller-supplied *options* list.  Used for per-notification dynamic
+    slot updates pushed to SMAPI before invoking the skill.
+    """
+    model = get_model(locale, invocation_name)
+    model["interactionModel"]["languageModel"]["types"] = [
+        {
+            "name": "Selections",
+            "values": [{"name": {"value": opt}} for opt in options],
+        }
+    ]
+    return model
+
+
 def _build_intents(locale_data: dict[str, str | list[str]]) -> list[dict]:
     """Build the full intent list for an interaction model."""
     intents: list[dict] = []

@@ -119,6 +119,25 @@ class SMAPI:
             headers={"If-Match": "*"},
         )
 
+    async def async_update_slot_type(
+        self,
+        skill_id: str,
+        locale: str,
+        options: list[str],
+        invocation_name: str = "actionable notifications",
+    ) -> None:
+        """Update the Selections slot type with custom options.
+
+        Builds a full interaction model with the provided *options* as
+        Selections slot values and uploads it via SMAPI.  The model build
+        happens asynchronously on Amazon's side — this method does NOT
+        wait for the build to complete.
+        """
+        from .models import get_model_with_options
+
+        model = get_model_with_options(locale, invocation_name, options)
+        await self.async_upload_model(skill_id, locale, model)
+
     async def async_upload_model(
         self,
         skill_id: str,
