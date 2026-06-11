@@ -24,6 +24,7 @@ SERVICE_SEND_SCHEMA = vol.Schema(
         vol.Required("text"): str,
         vol.Optional("alexa_device"): str,
         vol.Optional("event_id"): str,
+        vol.Optional("reprompt"): str,
         vol.Optional("suppress_confirmation", default=False): bool,
         vol.Optional("options"): [str],
     }
@@ -64,6 +65,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         }
         if options:
             payload["options"] = options
+
+        reprompt = call.data.get("reprompt")
+        if reprompt:
+            payload["reprompt"] = reprompt
 
         # Write payload to input_text entity
         await _async_set_input_text_state(hass, json.dumps(payload))

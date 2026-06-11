@@ -25,6 +25,14 @@ blueprint:
       description: The question or statement Alexa will speak.
       selector:
         text:
+    reprompt_text:
+      name: Reprompt Text
+      description: >-
+        What Alexa says when the user doesn't respond clearly.
+        Leave empty to repeat the notification text.
+      default: ""
+      selector:
+        text:
     alexa_device:
       name: Alexa Device
       description: >-
@@ -88,6 +96,7 @@ action:
     data:
       text: !input notification_text
       event_id: "{{ evt_id }}"
+      reprompt: !input reprompt_text
       suppress_confirmation: !input suppress_confirmation
       options: !input options
     target:
