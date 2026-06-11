@@ -1305,3 +1305,194 @@ class TestQueueAdvanceInDispatcher:
         updated = json.loads(hass.states.async_set.call_args.args[1])
         assert len(updated) == 1
         assert updated[0]["event"] == "evt2"
+
+
+# ---------------------------------------------------------------------------
+# Rich event data tests (ACT-20)
+# ---------------------------------------------------------------------------
+
+
+class TestGetDeviceId:
+    """Tests for _get_device_id helper."""
+
+    def test_extracts_device_id(self):
+        body = _intent_request("AMAZON.YesIntent")
+        body["context"]["System"]["device"] = {"deviceId": "amzn1.ask.device.ABC123"}
+        assert sh._get_device_id(body) == "amzn1.ask.device.ABC123"
+
+    def test_missing_device_returns_none(self):
+        body = _intent_request("AMAZON.YesIntent")
+        assert sh._get_device_id(body) is None
+
+    def test_empty_device_dict_returns_none(self):
+        body = _intent_request("AMAZON.YesIntent")
+        body["context"]["System"]["device"] = {}
+        assert sh._get_device_id(body) is None
+
+    def test_missing_context_returns_none(self):
+        body = {"request": {"type": "IntentRequest", "intent": {"name": "X", "slots": {}}}}
+        assert sh._get_device_id(body) is None
+
+
+class TestGetTranscript:
+    """Tests for _get_transcript helper."""
+
+    def test_from_slot_values(self):
+        body = _intent_request("String", {"Strings": {"value": "hello world"}})
+        assert sh._get_transcript(body) == "hello world"
+
+    def test_multiple_slots_joined(self):
+        body = _intent_request("Date", {
+            "Dates": {"value": "2024-06-15"},
+            "Times": {"value": "14:30"},
+        })
+        result = sh._get_transcript(body)
+        assert "2024-06-15" in result
+        assert "14:30" in result
+
+    def test_no_slots_returns_none(self):
+        body = _intent_request("AMAZON.YesIntent")
+        assert sh._get_transcript(body) is None
+
+    def test_empty_slots_returns_none(self):
+        body = _intent_request("AMAZON.YesIntent", {})
+        assert sh._get_transcript(body) is None
+
+    def test_slots_with_none_values_skipped(self):
+        body = _intent_request("Date", {
+            "Dates": {"value": None},
+            "Times": {"value": "14:30"},
+        })
+        result = sh._get_transcript(body)
+        assert result == "14:30"
+
+    def test_spoken_text_preferred_over_slots(self):
+        body = _intent_request("String", {"Strings": {"value": "slot value"}})
+        body["request"]["intent"]["spokenText"] = "spoken text override"
+        assert sh._get_transcript(body) == "spoken text override"
+
+    def test_launch_request_no_intent_returns_none(self):
+        body = _launch_request()
+        assert sh._get_transcript(body) is None
+
+
+class TestRichEventData:
+    """Tests for rich event data in _post_ha_event (ACT-20)."""
+
+    @pytest.mark.asyncio
+    async def test_locale_in_event(self):
+        """Event data includes locale from the Alexa request."""
+        hass = _make_ha({"event": "e1", "text": "Q?", "suppress_confirmation": False})
+        body = _intent_request("AMAZON.YesIntent", locale="it-IT")
+        await sh.handle_alexa_request(hass, body)
+        event_data = hass.bus.async_fire.call_args[0][1]
+        assert event_data["locale"] == "it-IT"
+
+    @pytest.mark.asyncio
+    async def test_device_id_in_event(self):
+        """Event data includes device_id from context.System.device."""
+        hass = _make_ha({"event": "e1", "text": "Q?", "suppress_confirmation": False})
+        body = _intent_request("AMAZON.YesIntent")
+        body["context"]["System"]["device"] = {"deviceId": "amzn1.ask.device.XYZ"}
+        await sh.handle_alexa_request(hass, body)
+        event_data = hass.bus.async_fire.call_args[0][1]
+        assert event_data["device_id"] == "amzn1.ask.device.XYZ"
+
+    @pytest.mark.asyncio
+    async def test_device_id_absent_when_missing(self):
+        """device_id is not in event when device context is absent."""
+        hass = _make_ha({"event": "e1", "text": "Q?", "suppress_confirmation": False})
+        body = _intent_request("AMAZON.YesIntent")
+        await sh.handle_alexa_request(hass, body)
+        event_data = hass.bus.async_fire.call_args[0][1]
+        assert "device_id" not in event_data
+
+    @pytest.mark.asyncio
+    async def test_transcript_in_event_from_slot(self):
+        """Event data includes transcript derived from slot values."""
+        hass = _make_ha({"event": "e1", "text": "Q?", "suppress_confirmation": False})
+        body = _intent_request("FreeForm", {"FreeFormText": {"value": "I want pizza"}})
+        await sh.handle_alexa_request(hass, body)
+        event_data = hass.bus.async_fire.call_args[0][1]
+        assert event_data["transcript"] == "I want pizza"
+
+    @pytest.mark.asyncio
+    async def test_transcript_absent_when_no_slots(self):
+        """transcript is not in event when no slot values are available."""
+        hass = _make_ha({"event": "e1", "text": "Q?", "suppress_confirmation": False})
+        body = _intent_request("AMAZON.YesIntent")
+        await sh.handle_alexa_request(hass, body)
+        event_data = hass.bus.async_fire.call_args[0][1]
+        assert "transcript" not in event_data
+
+    @pytest.mark.asyncio
+    async def test_timestamp_in_event(self):
+        """Event data includes an ISO 8601 timestamp."""
+        hass = _make_ha({"event": "e1", "text": "Q?", "suppress_confirmation": False})
+        await sh.handle_alexa_request(hass, _intent_request("AMAZON.YesIntent"))
+        event_data = hass.bus.async_fire.call_args[0][1]
+        ts = event_data["timestamp"]
+        # Verify ISO 8601 format: should parse without error
+        from datetime import datetime
+        parsed = datetime.fromisoformat(ts)
+        assert parsed.tzinfo is not None  # has timezone info
+
+    @pytest.mark.asyncio
+    async def test_existing_fields_unchanged(self):
+        """Existing event fields (event_id, event_response, event_response_type) are preserved."""
+        hass = _make_ha({"event": "e1", "text": "Q?", "suppress_confirmation": False})
+        await sh.handle_alexa_request(hass, _intent_request("AMAZON.YesIntent"))
+        event_data = hass.bus.async_fire.call_args[0][1]
+        assert event_data["event_id"] == "e1"
+        assert event_data["event_response"] == sh.RESPONSE_YES
+        assert event_data["event_response_type"] == sh.RESPONSE_YES
+
+    @pytest.mark.asyncio
+    async def test_person_fields_still_present(self):
+        """Person ID and name fields still work alongside new rich data."""
+        hass = _make_ha({"event": "e1", "text": "Q?", "suppress_confirmation": False})
+        body = _intent_request("AMAZON.YesIntent")
+        body["context"]["System"]["person"] = {"personId": "amzn1.account.ABC"}
+        await sh.handle_alexa_request(hass, body, {"amzn1.account.ABC": "Alice"})
+        event_data = hass.bus.async_fire.call_args[0][1]
+        assert event_data["event_person_id"] == "amzn1.account.ABC"
+        assert event_data["event_person_name"] == "Alice"
+        # New fields also present
+        assert "locale" in event_data
+        assert "timestamp" in event_data
+
+    @pytest.mark.asyncio
+    async def test_backward_compat_new_fields_absent(self):
+        """New fields that are None are not in event dict — backward compatible."""
+        hass = _make_ha({"event": "e1", "text": "Q?", "suppress_confirmation": False})
+        body = _intent_request("AMAZON.YesIntent")  # no device, no slots
+        await sh.handle_alexa_request(hass, body)
+        event_data = hass.bus.async_fire.call_args[0][1]
+        # Required new fields always present
+        assert "locale" in event_data
+        assert "timestamp" in event_data
+        # Optional new fields absent when no data
+        assert "device_id" not in event_data
+        assert "transcript" not in event_data
+
+    @pytest.mark.asyncio
+    async def test_all_rich_fields_together(self):
+        """All rich event fields present when full Alexa context is available."""
+        hass = _make_ha({"event": "e_rich", "text": "Q?", "suppress_confirmation": False})
+        body = _intent_request("FreeForm", {"FreeFormText": {"value": "remind me to call mom"}}, locale="it-IT")
+        body["context"]["System"]["device"] = {"deviceId": "amzn1.ask.device.LIVING"}
+        body["context"]["System"]["person"] = {"personId": "amzn1.account.PAolo"}
+        await sh.handle_alexa_request(hass, body, {"amzn1.account.PAolo": "Paolo"})
+
+        event_data = hass.bus.async_fire.call_args[0][1]
+        # Existing fields
+        assert event_data["event_id"] == "e_rich"
+        assert event_data["event_response"] == "remind me to call mom"
+        assert event_data["event_response_type"] == sh.RESPONSE_FREEFORM
+        assert event_data["event_person_id"] == "amzn1.account.PAolo"
+        assert event_data["event_person_name"] == "Paolo"
+        # New fields
+        assert event_data["locale"] == "it-IT"
+        assert event_data["device_id"] == "amzn1.ask.device.LIVING"
+        assert event_data["transcript"] == "remind me to call mom"
+        assert "timestamp" in event_data

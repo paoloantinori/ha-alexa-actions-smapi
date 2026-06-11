@@ -13,6 +13,7 @@ import dataclasses
 import json
 import logging
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -230,6 +231,42 @@ def _get_locale(request_body: dict) -> str:
     return request_body.get("request", {}).get("locale", "en-US")
 
 
+def _get_device_id(request_body: dict) -> str | None:
+    """Extract Echo device ID from request context."""
+    return (
+        request_body.get("context", {})
+        .get("System", {})
+        .get("device", {})
+        .get("deviceId")
+    )
+
+
+def _get_transcript(request_body: dict) -> str | None:
+    """Extract the raw spoken text from the Alexa request.
+
+    Attempts, in order:
+      1. ``request.intent.spokenText`` (newer Alexa API)
+      2. Concatenation of all non-None slot values from ``request.intent.slots``
+
+    Returns None when no transcript can be derived.
+    """
+    req = request_body.get("request", {})
+
+    # 1. Check for native spokenText field (available in newer Alexa requests)
+    spoken = req.get("intent", {}).get("spokenText")
+    if spoken:
+        return spoken
+
+    # 2. Fallback: join all non-None slot values
+    slots = req.get("intent", {}).get("slots", {})
+    if slots:
+        values = [s.get("value") for s in slots.values() if s.get("value")]
+        if values:
+            return " ".join(values)
+
+    return None
+
+
 # ---------------------------------------------------------------------------
 # ISO 8601 duration parser (replaces isodate dependency)
 # ---------------------------------------------------------------------------
@@ -349,6 +386,16 @@ def _post_ha_event(
         body["event_person_id"] = person_id
     if person_name:
         body["event_person_name"] = person_name
+
+    # Rich event data for automation context
+    body["locale"] = _get_locale(request_body)
+    device_id = _get_device_id(request_body)
+    if device_id:
+        body["device_id"] = device_id
+    transcript = _get_transcript(request_body)
+    if transcript:
+        body["transcript"] = transcript
+    body["timestamp"] = datetime.now(timezone.utc).isoformat()
 
     hass.bus.async_fire(EVENT_ALEXA_ACTIONABLE_NOTIFICATION, body)
 
