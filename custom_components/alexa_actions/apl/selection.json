@@ -1,0 +1,58 @@
+{
+  "type": "APL",
+  "version": "2024.3",
+  "import": [{"name": "alexa-layouts", "version": "2024.3"}],
+  "mainTemplate": {
+    "parameters": ["payload"],
+    "items": [{
+      "type": "Container",
+      "height": "100vh",
+      "width": "100vw",
+      "paddingTop": "@spacing2XLarge",
+      "paddingLeft": "@marginHorizontal",
+      "paddingRight": "@marginHorizontal",
+      "items": [
+        {
+          "type": "Text",
+          "text": "${payload.notificationData.properties.title}",
+          "fontSize": "@fontSizeDisplay3",
+          "fontWeight": "bold",
+          "maxLines": 2,
+          "paddingBottom": "@spacingMedium"
+        },
+        {
+          "type": "Text",
+          "text": "${payload.notificationData.properties.body}",
+          "fontSize": "@fontSizeMedium",
+          "maxLines": 2,
+          "paddingBottom": "@spacingMedium"
+        },
+        {
+          "type": "Sequence",
+          "id": "optionsList",
+          "height": "auto",
+          "data": "${payload.notificationData.properties.options}",
+          "numbered": true,
+          "item": {
+            "type": "TouchWrapper",
+            "onPress": [{
+              "type": "SendEvent",
+              "arguments": ["optionSelected", "${data}"]
+            }],
+            "item": {
+              "type": "Container",
+              "paddingTop": "@spacingSmall",
+              "paddingBottom": "@spacingSmall",
+              "paddingLeft": "@spacingMedium",
+              "items": [{
+                "type": "Text",
+                "text": "${data}",
+                "fontSize": "@fontSizeMedium"
+              }]
+            }
+          }
+        }
+      ]
+    }]
+  }
+}

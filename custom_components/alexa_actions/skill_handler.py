@@ -34,6 +34,7 @@ from .const import (
     RESPONSE_YES,
 )
 _COMPONENT_DIR = Path(__file__).resolve().parent
+_APL_DIR = _COMPONENT_DIR / "apl"
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -435,11 +436,84 @@ def _build_card(ha_state: HaState) -> dict | None:
     return None
 
 
+# ---------------------------------------------------------------------------
+# APL template helpers
+# ---------------------------------------------------------------------------
+
+
+def _load_apl_template(name: str) -> dict:
+    """Load an APL template JSON file by name (without .json extension)."""
+    path = _APL_DIR / f"{name}.json"
+    with open(path, encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def _strip_ssml(text: str) -> str:
+    """Remove SSML tags from text for visual display."""
+    return re.sub(r"<[^>]+>", "", text).strip()
+
+
+def _build_apl_datasource(ha_state: HaState) -> dict:
+    """Build the APL datasource from notification state."""
+    display_text = ha_state.text or ""
+    if display_text.lstrip().startswith("<speak>"):
+        display_text = _strip_ssml(display_text)
+
+    return {
+        "notificationData": {
+            "type": "object",
+            "properties": {
+                "title": ha_state.display_title or "",
+                "body": display_text,
+                "hasConfirmButton": not ha_state.suppress_confirmation,
+                "confirmLabel": "Yes",
+                "cancelLabel": "No",
+                "options": ha_state.options or [],
+            },
+        },
+    }
+
+
+def _supports_apl(request_body: dict) -> bool:
+    """Check if the requesting device supports APL."""
+    supported = (
+        request_body.get("context", {})
+        .get("System", {})
+        .get("device", {})
+        .get("supportedInterfaces", {})
+    )
+    return "Alexa.Presentation.APL" in supported
+
+
+def _build_apl_directive(ha_state: HaState) -> dict | None:
+    """Build an APL RenderDocument directive if appropriate.
+
+    Returns None if no visual data to display.
+    Template selection:
+    - notification template: when options are NOT provided
+    - selection template: when options ARE provided
+    """
+    if not ha_state.display_title and not ha_state.display_body and not ha_state.text:
+        return None
+
+    template_name = "selection" if ha_state.options else "notification"
+    template = _load_apl_template(template_name)
+    datasource = _build_apl_datasource(ha_state)
+
+    return {
+        "type": "Alexa.Presentation.APL.RenderDocument",
+        "token": f"alexa_actions_{ha_state.event_id or 'default'}",
+        "document": template,
+        "datasources": datasource,
+    }
+
+
 def _build_response(
     speak_output: str | None = None,
     reprompt: str | None = None,
     should_end_session: bool = True,
     card: dict | None = None,
+    directives: list[dict] | None = None,
 ) -> dict:
     """Build a standard Alexa skill response JSON envelope."""
     response: dict[str, Any] = {}
@@ -450,6 +524,8 @@ def _build_response(
     if card:
         response["card"] = card
     response["shouldEndSession"] = should_end_session
+    if directives:
+        response.setdefault("directives", []).extend(directives)
     return {"version": "1.0", "response": response}
 
 
@@ -541,9 +617,18 @@ async def _handle_launch(hass: HomeAssistant, body: dict, ls: dict, person_map: 
     # Single-turn (existing behavior)
     reprompt = ha_state.reprompt or ha_state.text
     card = _build_card(ha_state)
+
+    # Build APL directive for screen-capable devices
+    apl_directives: list[dict] = []
+    if _supports_apl(body):
+        apl_directive = _build_apl_directive(ha_state)
+        if apl_directive:
+            apl_directives.append(apl_directive)
+
     return _build_response(
         speak_output=ha_state.text, reprompt=reprompt, should_end_session=False,
         card=card,
+        directives=apl_directives or None,
     )
 
 

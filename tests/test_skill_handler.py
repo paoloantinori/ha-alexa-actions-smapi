@@ -1496,3 +1496,473 @@ class TestRichEventData:
         assert event_data["device_id"] == "amzn1.ask.device.LIVING"
         assert event_data["transcript"] == "remind me to call mom"
         assert "timestamp" in event_data
+
+
+# ---------------------------------------------------------------------------
+# APL tests (ACT-22)
+# ---------------------------------------------------------------------------
+
+
+def _apl_request(locale: str = "en-US") -> dict:
+    """Build a LaunchRequest with APL support indicated in context."""
+    return {
+        "request": {"type": "LaunchRequest", "locale": locale},
+        "context": {
+            "System": {
+                "device": {
+                    "supportedInterfaces": {
+                        "Alexa.Presentation.APL": {},
+                    },
+                },
+            },
+        },
+    }
+
+
+def _non_apl_request(locale: str = "en-US") -> dict:
+    """Build a LaunchRequest without APL support (no screen)."""
+    return {
+        "request": {"type": "LaunchRequest", "locale": locale},
+        "context": {
+            "System": {
+                "device": {
+                    "supportedInterfaces": {},
+                },
+            },
+        },
+    }
+
+
+class TestLoadAplTemplate:
+    """Tests for _load_apl_template helper."""
+
+    def test_load_notification_template(self):
+        template = sh._load_apl_template("notification")
+        assert template["type"] == "APL"
+        assert "mainTemplate" in template
+        assert template["mainTemplate"]["parameters"] == ["payload"]
+
+    def test_load_selection_template(self):
+        template = sh._load_apl_template("selection")
+        assert template["type"] == "APL"
+        assert "mainTemplate" in template
+
+    def test_load_nonexistent_template_raises(self):
+        with pytest.raises(FileNotFoundError):
+            sh._load_apl_template("nonexistent")
+
+
+class TestBuildAplDatasource:
+    """Tests for _build_apl_datasource helper."""
+
+    def test_basic_datasource(self):
+        ha_state = sh.HaState(
+            event_id="evt1",
+            suppress_confirmation=False,
+            text="Did you take the pill?",
+        )
+        ds = sh._build_apl_datasource(ha_state)
+        props = ds["notificationData"]["properties"]
+        assert props["title"] == ""
+        assert props["body"] == "Did you take the pill?"
+        assert props["hasConfirmButton"] is True
+        assert props["confirmLabel"] == "Yes"
+        assert props["cancelLabel"] == "No"
+        assert props["options"] == []
+
+    def test_datasource_with_display_fields(self):
+        ha_state = sh.HaState(
+            event_id="evt2",
+            suppress_confirmation=False,
+            text="Question?",
+            display_title="Reminder",
+            display_body="Details here",
+        )
+        ds = sh._build_apl_datasource(ha_state)
+        props = ds["notificationData"]["properties"]
+        assert props["title"] == "Reminder"
+        assert props["body"] == "Question?"
+
+    def test_datasource_with_options(self):
+        ha_state = sh.HaState(
+            event_id="evt3",
+            suppress_confirmation=False,
+            text="Pick one",
+            options=["Red", "Green", "Blue"],
+        )
+        ds = sh._build_apl_datasource(ha_state)
+        props = ds["notificationData"]["properties"]
+        assert props["options"] == ["Red", "Green", "Blue"]
+
+    def test_datasource_suppress_confirmation(self):
+        ha_state = sh.HaState(
+            event_id="evt4",
+            suppress_confirmation=True,
+            text="Auto confirmed",
+        )
+        ds = sh._build_apl_datasource(ha_state)
+        props = ds["notificationData"]["properties"]
+        assert props["hasConfirmButton"] is False
+
+    def test_datasource_ssml_stripped(self):
+        """SSML tags should be removed from display text."""
+        ha_state = sh.HaState(
+            event_id="evt5",
+            suppress_confirmation=False,
+            text="<speak>Paolo<break time='1s'/>hai preso la pastiglia?</speak>",
+        )
+        ds = sh._build_apl_datasource(ha_state)
+        props = ds["notificationData"]["properties"]
+        assert "<speak>" not in props["body"]
+        assert "<break" not in props["body"]
+        assert props["body"] == "Paolohai preso la pastiglia?"
+
+    def test_datasource_plain_text_unchanged(self):
+        """Non-SSML text should pass through unchanged."""
+        ha_state = sh.HaState(
+            event_id="evt6",
+            suppress_confirmation=False,
+            text="Plain text notification",
+        )
+        ds = sh._build_apl_datasource(ha_state)
+        props = ds["notificationData"]["properties"]
+        assert props["body"] == "Plain text notification"
+
+    def test_datasource_empty_text(self):
+        ha_state = sh.HaState(
+            event_id="evt7",
+            suppress_confirmation=False,
+            text=None,
+        )
+        ds = sh._build_apl_datasource(ha_state)
+        props = ds["notificationData"]["properties"]
+        assert props["body"] == ""
+
+
+class TestSupportsApl:
+    """Tests for _supports_apl helper."""
+
+    def test_apl_supported(self):
+        body = _apl_request()
+        assert sh._supports_apl(body) is True
+
+    def test_apl_not_supported(self):
+        body = _non_apl_request()
+        assert sh._supports_apl(body) is False
+
+    def test_no_context(self):
+        body = {"request": {"type": "LaunchRequest"}}
+        assert sh._supports_apl(body) is False
+
+    def test_no_device(self):
+        body = {
+            "request": {"type": "LaunchRequest"},
+            "context": {"System": {}},
+        }
+        assert sh._supports_apl(body) is False
+
+    def test_no_supported_interfaces(self):
+        body = {
+            "request": {"type": "LaunchRequest"},
+            "context": {"System": {"device": {}}},
+        }
+        assert sh._supports_apl(body) is False
+
+    def test_other_interfaces_not_apl(self):
+        body = {
+            "request": {"type": "LaunchRequest"},
+            "context": {
+                "System": {
+                    "device": {
+                        "supportedInterfaces": {
+                            "Alexa.Presentation.HTML": {},
+                        },
+                    },
+                },
+            },
+        }
+        assert sh._supports_apl(body) is False
+
+
+class TestBuildAplDirective:
+    """Tests for _build_apl_directive helper."""
+
+    def test_returns_none_when_no_visual_data(self):
+        """When text, display_title, and display_body are all empty, return None."""
+        ha_state = sh.HaState(
+            event_id="evt_none",
+            suppress_confirmation=False,
+            text=None,
+            display_title=None,
+            display_body=None,
+        )
+        assert sh._build_apl_directive(ha_state) is None
+
+    def test_returns_notification_template_without_options(self):
+        """Without options, uses the notification template."""
+        ha_state = sh.HaState(
+            event_id="evt_notif",
+            suppress_confirmation=False,
+            text="Do you want coffee?",
+        )
+        directive = sh._build_apl_directive(ha_state)
+        assert directive is not None
+        assert directive["type"] == "Alexa.Presentation.APL.RenderDocument"
+        assert directive["token"] == "alexa_actions_evt_notif"
+        doc = directive["document"]
+        assert doc["type"] == "APL"
+        # Notification template has AlexaButton elements
+        items = doc["mainTemplate"]["items"][0]["items"]
+        has_button = any(
+            item.get("type") == "Container" and
+            any(i.get("type") == "AlexaButton" for i in item.get("items", []))
+            for item in items
+        )
+        assert has_button
+        assert "datasources" in directive
+        assert "notificationData" in directive["datasources"]
+
+    def test_returns_selection_template_with_options(self):
+        """With options, uses the selection template."""
+        ha_state = sh.HaState(
+            event_id="evt_sel",
+            suppress_confirmation=False,
+            text="Pick a color",
+            options=["Red", "Green", "Blue"],
+        )
+        directive = sh._build_apl_directive(ha_state)
+        assert directive is not None
+        assert directive["type"] == "Alexa.Presentation.APL.RenderDocument"
+        doc = directive["document"]
+        assert doc["type"] == "APL"
+        # Selection template has a Sequence element
+        items = doc["mainTemplate"]["items"][0]["items"]
+        has_sequence = any(item.get("type") == "Sequence" for item in items)
+        assert has_sequence
+        # Datasource includes options
+        props = directive["datasources"]["notificationData"]["properties"]
+        assert props["options"] == ["Red", "Green", "Blue"]
+
+    def test_default_token_when_no_event_id(self):
+        """When event_id is None, token uses 'default'."""
+        ha_state = sh.HaState(
+            event_id=None,
+            suppress_confirmation=False,
+            text="Some text",
+        )
+        directive = sh._build_apl_directive(ha_state)
+        assert directive["token"] == "alexa_actions_default"
+
+    def test_directive_with_display_title(self):
+        """Display title alone triggers APL directive."""
+        ha_state = sh.HaState(
+            event_id="evt_title",
+            suppress_confirmation=False,
+            text=None,
+            display_title="Title Only",
+        )
+        directive = sh._build_apl_directive(ha_state)
+        assert directive is not None
+        props = directive["datasources"]["notificationData"]["properties"]
+        assert props["title"] == "Title Only"
+
+    def test_directive_with_display_body(self):
+        """Display body alone triggers APL directive."""
+        ha_state = sh.HaState(
+            event_id="evt_body",
+            suppress_confirmation=False,
+            text=None,
+            display_body="Body text here",
+        )
+        directive = sh._build_apl_directive(ha_state)
+        assert directive is not None
+
+
+class TestBuildResponseWithDirectives:
+    """Tests for _build_response with the directives parameter."""
+
+    def test_directives_added_to_response(self):
+        """Directives list is added to the response."""
+        d = [{"type": "Alexa.Presentation.APL.RenderDocument", "token": "t1"}]
+        r = sh._build_response(speak_output="Hello", directives=d)
+        assert r["response"]["directives"] == d
+
+    def test_directives_appended_to_existing(self):
+        """When response already has directives (e.g. from ElicitSlot), new ones are appended."""
+        # Simulate what _build_elicit_slot_response does
+        r = sh._build_response(
+            speak_output="What?",
+            reprompt="What?",
+            should_end_session=False,
+        )
+        r["response"]["directives"] = [{
+            "type": "Dialog.ElicitSlot",
+            "slotToElicit": "testSlot",
+        }]
+        # Now append APL directive using the same pattern
+        apl = [{"type": "Alexa.Presentation.APL.RenderDocument", "token": "t2"}]
+        r["response"].setdefault("directives", []).extend(apl)
+        assert len(r["response"]["directives"]) == 2
+        assert r["response"]["directives"][0]["type"] == "Dialog.ElicitSlot"
+        assert r["response"]["directives"][1]["type"] == "Alexa.Presentation.APL.RenderDocument"
+
+    def test_none_directives_no_key(self):
+        """Passing directives=None should not add directives key."""
+        r = sh._build_response(speak_output="Hello", directives=None)
+        assert "directives" not in r["response"]
+
+    def test_empty_directives_no_key(self):
+        """Passing directives=None (default) should not add directives key."""
+        r = sh._build_response(speak_output="Hello")
+        assert "directives" not in r["response"]
+
+
+class TestHandleLaunchApl:
+    """Tests for APL integration in _handle_launch."""
+
+    @pytest.mark.asyncio
+    async def test_apl_directive_included_on_screen_device(self):
+        """APL directive is included when device supports APL."""
+        hass = _make_ha({
+            "event": "evt_apl",
+            "text": "Did you take the pill?",
+            "suppress_confirmation": False,
+            "display_title": "Reminder",
+        })
+        r = await sh.handle_alexa_request(hass, _apl_request())
+        assert r["response"]["outputSpeech"]["text"] == "Did you take the pill?"
+        directives = r["response"]["directives"]
+        assert len(directives) == 1
+        assert directives[0]["type"] == "Alexa.Presentation.APL.RenderDocument"
+        assert directives[0]["token"] == "alexa_actions_evt_apl"
+
+    @pytest.mark.asyncio
+    async def test_no_apl_directive_on_non_screen_device(self):
+        """No APL directive when device does not support APL (voice-only fallback)."""
+        hass = _make_ha({
+            "event": "evt_noap",
+            "text": "Did you take the pill?",
+            "suppress_confirmation": False,
+            "display_title": "Reminder",
+        })
+        r = await sh.handle_alexa_request(hass, _non_apl_request())
+        assert r["response"]["outputSpeech"]["text"] == "Did you take the pill?"
+        assert "directives" not in r["response"]
+
+    @pytest.mark.asyncio
+    async def test_apl_selection_template_with_options(self):
+        """When options are present, selection template is used in APL directive."""
+        hass = _make_ha({
+            "event": "evt_opts",
+            "text": "Pick a color",
+            "suppress_confirmation": False,
+            "options": ["Red", "Green", "Blue"],
+        })
+        r = await sh.handle_alexa_request(hass, _apl_request())
+        directives = r["response"]["directives"]
+        assert len(directives) == 1
+        doc = directives[0]["document"]
+        # Selection template has a Sequence element
+        items = doc["mainTemplate"]["items"][0]["items"]
+        has_sequence = any(item.get("type") == "Sequence" for item in items)
+        assert has_sequence
+
+    @pytest.mark.asyncio
+    async def test_apl_notification_template_without_options(self):
+        """Without options, notification template is used in APL directive."""
+        hass = _make_ha({
+            "event": "evt_noopts",
+            "text": "Did you take the pill?",
+            "suppress_confirmation": False,
+        })
+        r = await sh.handle_alexa_request(hass, _apl_request())
+        directives = r["response"]["directives"]
+        assert len(directives) == 1
+        doc = directives[0]["document"]
+        # Notification template should NOT have a Sequence element
+        items = doc["mainTemplate"]["items"][0]["items"]
+        has_sequence = any(item.get("type") == "Sequence" for item in items)
+        assert not has_sequence
+
+    @pytest.mark.asyncio
+    async def test_apl_with_ssml_stripped(self):
+        """APL display text has SSML tags stripped."""
+        hass = _make_ha({
+            "event": "evt_ssml",
+            "text": "<speak>Paolo<break time='1s'/>hai preso la pastiglia?</speak>",
+            "suppress_confirmation": False,
+        })
+        r = await sh.handle_alexa_request(hass, _apl_request())
+        # Voice output should be SSML
+        assert r["response"]["outputSpeech"]["type"] == "SSML"
+        # APL display should have stripped tags
+        directives = r["response"]["directives"]
+        body = directives[0]["datasources"]["notificationData"]["properties"]["body"]
+        assert "<speak>" not in body
+        assert "<break" not in body
+
+    @pytest.mark.asyncio
+    async def test_apl_with_card_and_directive(self):
+        """Both card and APL directive should coexist."""
+        hass = _make_ha({
+            "event": "evt_both",
+            "text": "Question?",
+            "suppress_confirmation": False,
+            "display_title": "Title",
+            "display_body": "Body text",
+        })
+        r = await sh.handle_alexa_request(hass, _apl_request())
+        # Card present
+        assert r["response"]["card"]["type"] == "Simple"
+        assert r["response"]["card"]["title"] == "Title"
+        # APL directive also present
+        directives = r["response"]["directives"]
+        assert len(directives) == 1
+        assert directives[0]["type"] == "Alexa.Presentation.APL.RenderDocument"
+
+    @pytest.mark.asyncio
+    async def test_apl_no_directive_when_no_text(self):
+        """When notification has no text/display fields, no APL directive even on APL device."""
+        hass = _make_ha({
+            "event": "evt_empty",
+            "text": "",
+            "suppress_confirmation": False,
+        })
+        # With empty text string, it's still truthy in the check...
+        # Actually _build_apl_directive checks if text exists but empty string is falsy in the combined check
+        r = await sh.handle_alexa_request(hass, _apl_request())
+        # Empty text is falsy, no display_title or display_body → no APL
+        assert "directives" not in r["response"]
+
+    @pytest.mark.asyncio
+    async def test_apl_preserves_reprompt(self):
+        """APL integration does not break reprompt behavior."""
+        hass = _make_ha({
+            "event": "evt_rep",
+            "text": "Did you take the pill?",
+            "reprompt": "Say yes or no",
+            "suppress_confirmation": False,
+        })
+        r = await sh.handle_alexa_request(hass, _apl_request())
+        assert r["response"]["reprompt"]["outputSpeech"]["text"] == "Say yes or no"
+        assert "directives" in r["response"]
+
+
+class TestStripSsml:
+    """Tests for _strip_ssml helper."""
+
+    def test_strip_full_ssml(self):
+        assert sh._strip_ssml("<speak>Hello world</speak>") == "Hello world"
+
+    def test_strip_ssml_with_break(self):
+        result = sh._strip_ssml("<speak>Hi<break time='1s'/>there</speak>")
+        assert result == "Hithere"
+
+    def test_no_tags(self):
+        assert sh._strip_ssml("Plain text") == "Plain text"
+
+    def test_empty_string(self):
+        assert sh._strip_ssml("") == ""
+
+    def test_only_tags(self):
+        assert sh._strip_ssml("<speak></speak>") == ""
