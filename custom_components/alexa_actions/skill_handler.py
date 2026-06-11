@@ -194,6 +194,24 @@ def _get_person_id(request_body: dict) -> str | None:
     return person.get("personId") if person else None
 
 
+def _resolve_person_name(
+    request_body: dict, person_map: dict[str, str] | None = None,
+) -> tuple[str | None, str | None]:
+    """Resolve person ID to friendly name.
+
+    Returns:
+        (person_id, person_name) tuple.
+        person_name is None if person_id is not in the mapping.
+    """
+    person_id = _get_person_id(request_body)
+    if not person_id:
+        return None, None
+    person_name = None
+    if person_map:
+        person_name = person_map.get(person_id)
+    return person_id, person_name
+
+
 def _get_locale(request_body: dict) -> str:
     """Extract locale from the Alexa request."""
     return request_body.get("request", {}).get("locale", "en-US")
@@ -303,6 +321,7 @@ def _post_ha_event(
     response_type: str,
     locale_strings: dict[str, str],
     request_body: dict,
+    person_map: dict[str, str] | None = None,
 ) -> str:
     """Fire the response event on the HA event bus.  Returns speak output."""
     body: dict[str, Any] = {
@@ -310,9 +329,11 @@ def _post_ha_event(
         "event_response": response,
         "event_response_type": response_type,
     }
-    person_id = _get_person_id(request_body)
+    person_id, person_name = _resolve_person_name(request_body, person_map)
     if person_id:
         body["event_person_id"] = person_id
+    if person_name:
+        body["event_person_name"] = person_name
 
     hass.bus.async_fire(EVENT_ALEXA_ACTIONABLE_NOTIFICATION, body)
 
@@ -420,7 +441,7 @@ def _get_next_missing_slot(
 # ---------------------------------------------------------------------------
 
 
-async def _handle_launch(hass: HomeAssistant, body: dict, ls: dict) -> dict:
+async def _handle_launch(hass: HomeAssistant, body: dict, ls: dict, person_map: dict[str, str] | None = None) -> dict:
     """LaunchRequest — speak the notification text or start a multi-turn dialog."""
     ha_state = _get_ha_state(hass)
     if not ha_state or not ha_state.event_id:
@@ -448,11 +469,11 @@ async def _handle_launch(hass: HomeAssistant, body: dict, ls: dict) -> dict:
 def _make_simple_response_handler(response_const: str):
     """Create a handler that reads state, posts an event, and responds."""
 
-    async def _handler(hass: HomeAssistant, body: dict, ls: dict) -> dict:
+    async def _handler(hass: HomeAssistant, body: dict, ls: dict, person_map: dict[str, str] | None = None) -> dict:
         ha_state = _get_ha_state(hass)
         if not ha_state:
             return _build_response()
-        speak = _post_ha_event(hass, ha_state, response_const, response_const, ls, body)
+        speak = _post_ha_event(hass, ha_state, response_const, response_const, ls, body, person_map)
         return _build_response(speak_output=speak)
 
     return _handler
@@ -462,7 +483,7 @@ _handle_yes = _make_simple_response_handler(RESPONSE_YES)
 _handle_no = _make_simple_response_handler(RESPONSE_NO)
 
 
-async def _handle_number(hass: HomeAssistant, body: dict, ls: dict) -> dict:
+async def _handle_number(hass: HomeAssistant, body: dict, ls: dict, person_map: dict[str, str] | None = None) -> dict:
     """Number intent — extract numeric slot, fire ResponseNumeric."""
     ha_state = _get_ha_state(hass)
     if not ha_state:
@@ -470,31 +491,31 @@ async def _handle_number(hass: HomeAssistant, body: dict, ls: dict) -> dict:
     number = _get_slot_value(body, "Numbers")
     if number == "?" or not number:
         raise ValueError("Numeric slot value could not be resolved")
-    speak = _post_ha_event(hass, ha_state, number, RESPONSE_NUMERIC, ls, body)
+    speak = _post_ha_event(hass, ha_state, number, RESPONSE_NUMERIC, ls, body, person_map)
     return _build_response(speak_output=speak)
 
 
-async def _handle_string(hass: HomeAssistant, body: dict, ls: dict) -> dict:
+async def _handle_string(hass: HomeAssistant, body: dict, ls: dict, person_map: dict[str, str] | None = None) -> dict:
     """String intent — extract string slot, fire ResponseString."""
     ha_state = _get_ha_state(hass)
     if not ha_state:
         return _build_response()
     strings = _get_slot_value(body, "Strings")
-    speak = _post_ha_event(hass, ha_state, strings, RESPONSE_STRING, ls, body)
+    speak = _post_ha_event(hass, ha_state, strings, RESPONSE_STRING, ls, body, person_map)
     return _build_response(speak_output=speak)
 
 
-async def _handle_freeform(hass: HomeAssistant, body: dict, ls: dict) -> dict:
+async def _handle_freeform(hass: HomeAssistant, body: dict, ls: dict, person_map: dict[str, str] | None = None) -> dict:
     """FreeForm intent — extract SearchQuery slot, fire ResponseFreeForm."""
     ha_state = _get_ha_state(hass)
     if not ha_state:
         return _build_response()
     text = _get_slot_value(body, "FreeFormText")
-    speak = _post_ha_event(hass, ha_state, text, RESPONSE_FREEFORM, ls, body)
+    speak = _post_ha_event(hass, ha_state, text, RESPONSE_FREEFORM, ls, body, person_map)
     return _build_response(speak_output=speak)
 
 
-async def _handle_select(hass: HomeAssistant, body: dict, ls: dict) -> dict:
+async def _handle_select(hass: HomeAssistant, body: dict, ls: dict, person_map: dict[str, str] | None = None) -> dict:
     """Select intent — resolve slot, fire ResponseSelect, speak selection.
 
     Resolution strategy:
@@ -517,24 +538,24 @@ async def _handle_select(hass: HomeAssistant, body: dict, ls: dict) -> dict:
                     break
     if not selection:
         raise ValueError("Selection slot value could not be resolved")
-    _post_ha_event(hass, ha_state, selection, RESPONSE_SELECT, ls, body)
+    _post_ha_event(hass, ha_state, selection, RESPONSE_SELECT, ls, body, person_map)
     template = ls.get(SELECTED, "You selected {}")
     speak = template.format(selection)
     return _build_response(speak_output=speak)
 
 
-async def _handle_duration(hass: HomeAssistant, body: dict, ls: dict) -> dict:
+async def _handle_duration(hass: HomeAssistant, body: dict, ls: dict, person_map: dict[str, str] | None = None) -> dict:
     """Duration intent — parse ISO 8601, fire ResponseDuration with seconds."""
     ha_state = _get_ha_state(hass)
     if not ha_state:
         return _build_response()
     duration = _get_slot_value(body, "Durations")
     seconds = _parse_iso_duration(duration)
-    speak = _post_ha_event(hass, ha_state, seconds, RESPONSE_DURATION, ls, body)
+    speak = _post_ha_event(hass, ha_state, seconds, RESPONSE_DURATION, ls, body, person_map)
     return _build_response(speak_output=speak)
 
 
-async def _handle_date(hass: HomeAssistant, body: dict, ls: dict) -> dict:
+async def _handle_date(hass: HomeAssistant, body: dict, ls: dict, person_map: dict[str, str] | None = None) -> dict:
     """Date intent — parse date/time slots, fire ResponseDateTime."""
     ha_state = _get_ha_state(hass)
     if not ha_state:
@@ -545,17 +566,17 @@ async def _handle_date(hass: HomeAssistant, body: dict, ls: dict) -> dict:
         raise ValueError("Both date and time slot values are empty")
     result = {**_parse_date(date_val), **_parse_time(time_val)}
     speak = _post_ha_event(
-        hass, ha_state, json.dumps(result), RESPONSE_DATE_TIME, ls, body,
+        hass, ha_state, json.dumps(result), RESPONSE_DATE_TIME, ls, body, person_map,
     )
     return _build_response(speak_output=speak)
 
 
-async def _handle_cancel_stop(hass: HomeAssistant, body: dict, ls: dict) -> dict:
+async def _handle_cancel_stop(hass: HomeAssistant, body: dict, ls: dict, person_map: dict[str, str] | None = None) -> dict:
     """Cancel/Stop intents — speak stop message."""
     return _build_response(speak_output=ls.get(STOP_MESSAGE, "Goodbye"))
 
 
-async def _handle_dialog_turn(hass: HomeAssistant, body: dict, ls: dict) -> dict:
+async def _handle_dialog_turn(hass: HomeAssistant, body: dict, ls: dict, person_map: dict[str, str] | None = None) -> dict:
     """Handle a multi-turn dialog intent — collect slots until complete.
 
     This handler is invoked when session attributes indicate an active
@@ -582,7 +603,7 @@ async def _handle_dialog_turn(hass: HomeAssistant, body: dict, ls: dict) -> dict
     if intent_name == "AMAZON.YesIntent" and session_attrs.get("_awaiting_confirm"):
         # All slots collected and confirmed — fire event
         _post_ha_event(
-            hass, ha_state, json.dumps(collected), RESPONSE_DIALOG, ls, body,
+            hass, ha_state, json.dumps(collected), RESPONSE_DIALOG, ls, body, person_map,
         )
         speak = ls.get(OKAY, "Okay")
         return _build_response(speak_output=speak, should_end_session=True)
@@ -634,27 +655,27 @@ async def _handle_dialog_turn(hass: HomeAssistant, body: dict, ls: dict) -> dict
 
     # No confirmation needed — fire event immediately
     _post_ha_event(
-        hass, ha_state, json.dumps(collected), RESPONSE_DIALOG, ls, body,
+        hass, ha_state, json.dumps(collected), RESPONSE_DIALOG, ls, body, person_map,
     )
     speak = "" if ha_state.suppress_confirmation else ls.get(OKAY, "Okay")
     return _build_response(speak_output=speak, should_end_session=True)
 
 
-async def _handle_fallback(hass: HomeAssistant, body: dict, ls: dict) -> dict:
+async def _handle_fallback(hass: HomeAssistant, body: dict, ls: dict, person_map: dict[str, str] | None = None) -> dict:
     """Fallback intent — fire ResponseNone."""
     ha_state = _get_ha_state(hass)
     if ha_state:
-        _post_ha_event(hass, ha_state, RESPONSE_NONE, RESPONSE_NONE, ls, body)
+        _post_ha_event(hass, ha_state, RESPONSE_NONE, RESPONSE_NONE, ls, body, person_map)
     return _build_response()
 
 
-async def _handle_session_ended(hass: HomeAssistant, body: dict, ls: dict) -> dict:
+async def _handle_session_ended(hass: HomeAssistant, body: dict, ls: dict, person_map: dict[str, str] | None = None) -> dict:
     """SessionEndedRequest — fire ResponseNone on timeout/user-initiated."""
     reason = body.get("request", {}).get("reason", "")
     if reason in ("EXCEEDED_MAX_REPROMPTS", "USER_INITIATED"):
         ha_state = _get_ha_state(hass)
         if ha_state:
-            _post_ha_event(hass, ha_state, RESPONSE_NONE, RESPONSE_NONE, ls, body)
+            _post_ha_event(hass, ha_state, RESPONSE_NONE, RESPONSE_NONE, ls, body, person_map)
     return _build_response()
 
 
@@ -721,12 +742,17 @@ _REQUEST_TYPE_HANDLERS: dict[str, Any] = {
 }
 
 
-async def handle_alexa_request(hass: HomeAssistant, request_body: dict) -> dict:
+async def handle_alexa_request(
+    hass: HomeAssistant,
+    request_body: dict,
+    person_map: dict[str, str] | None = None,
+) -> dict:
     """Main entry point — dispatch an incoming Alexa request.
 
     Args:
         hass: Home Assistant instance for state access and event firing.
         request_body: The raw JSON body of the Alexa POST request.
+        person_map: Optional mapping of Alexa personId → friendly name.
 
     Returns:
         Alexa-format response dict.
@@ -746,14 +772,14 @@ async def handle_alexa_request(hass: HomeAssistant, request_body: dict) -> dict:
             # regardless of the intent name.
             session_attrs = _get_session_attributes(request_body)
             if session_attrs.get("_dialog_slots") is not None:
-                result = await _handle_dialog_turn(hass, request_body, locale_strings)
+                result = await _handle_dialog_turn(hass, request_body, locale_strings, person_map)
             elif intent_name in ("AMAZON.YesIntent", "AMAZON.NoIntent"):
                 if session_attrs.get("_awaiting_confirm"):
-                    result = await _handle_dialog_turn(hass, request_body, locale_strings)
+                    result = await _handle_dialog_turn(hass, request_body, locale_strings, person_map)
                 else:
                     handler = _INTENT_HANDLERS.get(intent_name)
                     if handler:
-                        result = await handler(hass, request_body, locale_strings)
+                        result = await handler(hass, request_body, locale_strings, person_map)
                     else:
                         _LOGGER.warning("Unhandled intent: %s", intent_name)
                         result = _build_response()
@@ -761,7 +787,7 @@ async def handle_alexa_request(hass: HomeAssistant, request_body: dict) -> dict:
                 # Standard single-turn intent dispatch
                 handler = _INTENT_HANDLERS.get(intent_name)
                 if handler:
-                    result = await handler(hass, request_body, locale_strings)
+                    result = await handler(hass, request_body, locale_strings, person_map)
                 else:
                     _LOGGER.warning("Unhandled intent: %s", intent_name)
                     result = _build_response()
@@ -773,7 +799,7 @@ async def handle_alexa_request(hass: HomeAssistant, request_body: dict) -> dict:
 
         handler = _REQUEST_TYPE_HANDLERS.get(req_type)
         if handler:
-            result = await handler(hass, request_body, locale_strings)
+            result = await handler(hass, request_body, locale_strings, person_map)
             # SessionEndedRequest should also advance the queue.
             if req_type == "SessionEndedRequest":
                 await _advance_queue(hass)

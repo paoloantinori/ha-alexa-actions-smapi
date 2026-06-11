@@ -29,6 +29,7 @@ from .const import (
     CONF_HA_URL,
     CONF_INVOCATION_NAME,
     CONF_LOCALES,
+    CONF_PERSON_MAP,
     CONF_REFRESH_TOKEN,
     CONF_SKILL_ID,
     CONF_VENDOR_ID,
@@ -51,6 +52,36 @@ _DEFAULT_LOCALES = ["en-US"]
 
 _CALLBACK_PATH = "/auth/alexa_actions/callback"
 _SKILL_WEBHOOK_PATH = "/api/alexa_actions/skill"
+
+_PERSON_MAP_KEY = "person_map_text"
+
+
+def _parse_person_map(text: str) -> dict[str, str]:
+    """Parse person mapping text into a dict.
+
+    Each non-empty line should be ``personId: Friendly Name``.
+    Lines starting with ``#`` are treated as comments.
+    """
+    result: dict[str, str] = {}
+    for line in text.strip().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        # Split on the first colon only — the name may contain colons.
+        parts = line.split(":", 1)
+        if len(parts) == 2:
+            person_id = parts[0].strip()
+            person_name = parts[1].strip()
+            if person_id and person_name:
+                result[person_id] = person_name
+    return result
+
+
+def _person_map_to_text(person_map: dict[str, str] | None) -> str:
+    """Serialize a person_map dict back to text-area format."""
+    if not person_map:
+        return ""
+    return "\n".join(f"{k}: {v}" for k, v in person_map.items())
 
 
 class AlexaActionsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -411,6 +442,10 @@ class AlexaActionsOptionsFlow(config_entries.OptionsFlow):
                     finally:
                         await lwa_client.async_close()
 
+                # Parse person map from text area.
+                person_map_text = user_input.get(_PERSON_MAP_KEY, "")
+                person_map = _parse_person_map(person_map_text)
+
                 # Update the config entry data with new values.
                 new_data = dict(entry_data)
                 new_data[CONF_HA_URL] = new_ha_url
@@ -424,6 +459,7 @@ class AlexaActionsOptionsFlow(config_entries.OptionsFlow):
                     data={
                         CONF_INVOCATION_NAME: new_invocation,
                         CONF_HA_URL: new_ha_url,
+                        CONF_PERSON_MAP: person_map,
                     },
                 )
 
@@ -438,6 +474,8 @@ class AlexaActionsOptionsFlow(config_entries.OptionsFlow):
             CONF_INVOCATION_NAME, DEFAULT_SKILL_NAME
         )
         current_ha_url = self._config_entry.data.get(CONF_HA_URL, "")
+        current_person_map = self._config_entry.options.get(CONF_PERSON_MAP)
+        current_person_map_text = _person_map_to_text(current_person_map)
 
         data_schema = vol.Schema(
             {
@@ -450,6 +488,14 @@ class AlexaActionsOptionsFlow(config_entries.OptionsFlow):
                     CONF_HA_URL, default=current_ha_url
                 ): TextSelector(
                     TextSelectorConfig(type=TextSelectorType.URL)
+                ),
+                vol.Optional(
+                    _PERSON_MAP_KEY, default=current_person_map_text
+                ): TextSelector(
+                    TextSelectorConfig(
+                        type=TextSelectorType.TEXT,
+                        multiline=True,
+                    )
                 ),
             }
         )

@@ -7,7 +7,7 @@ from aiohttp import web
 
 from homeassistant.components.http import HomeAssistantView
 
-from .const import DOMAIN
+from .const import CONF_PERSON_MAP, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -42,7 +42,13 @@ class AlexaSkillView(HomeAssistantView):
                 status=400,
             )
 
-        response = await handle_alexa_request(self._hass, body)
+        # Resolve person_map from the first config entry's options.
+        person_map: dict[str, str] | None = None
+        entries = self._hass.config_entries.async_entries(DOMAIN)
+        if entries:
+            person_map = entries[0].options.get(CONF_PERSON_MAP)
+
+        response = await handle_alexa_request(self._hass, body, person_map)
         return web.json_response(response)
 
 

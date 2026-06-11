@@ -244,6 +244,8 @@ from custom_components.alexa_actions.config_flow import (
     AlexaActionsConfigFlow,
     AlexaActionsOptionsFlow,
     _CALLBACK_PATH,
+    _parse_person_map,
+    _person_map_to_text,
 )
 from custom_components.alexa_actions.const import (
     CONF_HA_TOKEN,
@@ -642,3 +644,80 @@ class TestCallbackView:
         codes = view._hass.data[DOMAIN]["auth_codes"]
         assert codes["state-1"] == "code-1"
         assert codes["state-2"] == "code-2"
+
+
+# ---------------------------------------------------------------------------
+# Test: _parse_person_map helper
+# ---------------------------------------------------------------------------
+
+
+class TestParsePersonMap:
+    """Tests for the person mapping text parser."""
+
+    def test_single_entry(self):
+        result = _parse_person_map("amzn1.account.ABC: Alice")
+        assert result == {"amzn1.account.ABC": "Alice"}
+
+    def test_multiple_entries(self):
+        text = "amzn1.account.ABC: Alice\namzn1.account.XYZ: Bob"
+        result = _parse_person_map(text)
+        assert result == {
+            "amzn1.account.ABC": "Alice",
+            "amzn1.account.XYZ": "Bob",
+        }
+
+    def test_empty_string(self):
+        assert _parse_person_map("") == {}
+
+    def test_whitespace_only(self):
+        assert _parse_person_map("   \n  \n  ") == {}
+
+    def test_comments_ignored(self):
+        text = "# This is a comment\namzn1.account.ABC: Alice"
+        result = _parse_person_map(text)
+        assert result == {"amzn1.account.ABC": "Alice"}
+
+    def test_empty_lines_ignored(self):
+        text = "\namzn1.account.ABC: Alice\n\namzn1.account.XYZ: Bob\n"
+        result = _parse_person_map(text)
+        assert len(result) == 2
+
+    def test_colon_in_name(self):
+        """Names can contain colons — split on first colon only."""
+        result = _parse_person_map("amzn1.account.ABC: Alice: The Brave")
+        assert result == {"amzn1.account.ABC": "Alice: The Brave"}
+
+    def test_no_colon_skipped(self):
+        """Lines without colons are silently skipped."""
+        result = _parse_person_map("just a line\namzn1.account.ABC: Alice")
+        assert result == {"amzn1.account.ABC": "Alice"}
+
+    def test_empty_name_skipped(self):
+        """Lines with empty name after colon are skipped."""
+        result = _parse_person_map("amzn1.account.ABC:")
+        assert result == {}
+
+    def test_whitespace_trimmed(self):
+        result = _parse_person_map("  amzn1.account.ABC  :  Alice  ")
+        assert result == {"amzn1.account.ABC": "Alice"}
+
+
+class TestPersonMapToText:
+    """Tests for the person map serialization helper."""
+
+    def test_none_map(self):
+        assert _person_map_to_text(None) == ""
+
+    def test_empty_map(self):
+        assert _person_map_to_text({}) == ""
+
+    def test_single_entry(self):
+        result = _person_map_to_text({"amzn1.account.ABC": "Alice"})
+        assert result == "amzn1.account.ABC: Alice"
+
+    def test_round_trip(self):
+        """Parsing the serialized text should yield the original map."""
+        original = {"amzn1.account.ABC": "Alice", "amzn1.account.XYZ": "Bob"}
+        text = _person_map_to_text(original)
+        result = _parse_person_map(text)
+        assert result == original

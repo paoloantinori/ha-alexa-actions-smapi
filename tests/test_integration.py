@@ -546,3 +546,60 @@ class TestQueueIntegration:
         assert resp["outputSpeech"]["text"] == "Did you take the pill?"
         assert resp["reprompt"]["outputSpeech"]["text"] == "Say yes or no"
 
+
+# ===========================================================================
+# Test class: Person name resolution integration
+# ===========================================================================
+
+
+class TestPersonNameIntegration:
+    """Full-pipeline tests for person name resolution."""
+
+    @pytest.mark.asyncio
+    async def test_person_name_in_yes_event(self):
+        """Yes response with person_map includes person_name in event."""
+        hass = _make_ha(
+            {"event": "evt_pn_yes", "text": "Take the pill?", "suppress_confirmation": False}
+        )
+        body = _alexa_intent_request("AMAZON.YesIntent")
+        body["context"]["System"]["person"] = {"personId": "amzn1.account.ALICE"}
+        person_map = {"amzn1.account.ALICE": "Alice", "amzn1.account.BOB": "Bob"}
+
+        await sh.handle_alexa_request(hass, body, person_map)
+
+        event_data = hass.bus.async_fire.call_args[0][1]
+        assert event_data["event_person_id"] == "amzn1.account.ALICE"
+        assert event_data["event_person_name"] == "Alice"
+
+    @pytest.mark.asyncio
+    async def test_person_name_absent_when_unmapped(self):
+        """Unknown person_id gets person_id but no person_name."""
+        hass = _make_ha(
+            {"event": "evt_pn_unmapped", "text": "Take the pill?", "suppress_confirmation": False}
+        )
+        body = _alexa_intent_request("AMAZON.YesIntent")
+        body["context"]["System"]["person"] = {"personId": "amzn1.account.UNKNOWN"}
+        person_map = {"amzn1.account.ALICE": "Alice"}
+
+        await sh.handle_alexa_request(hass, body, person_map)
+
+        event_data = hass.bus.async_fire.call_args[0][1]
+        assert event_data["event_person_id"] == "amzn1.account.UNKNOWN"
+        assert "event_person_name" not in event_data
+
+    @pytest.mark.asyncio
+    async def test_person_name_backward_compat_no_map(self):
+        """Without person_map, only person_id appears (backward compat)."""
+        hass = _make_ha(
+            {"event": "evt_pn_compat", "text": "Take the pill?", "suppress_confirmation": False}
+        )
+        body = _alexa_intent_request("AMAZON.YesIntent")
+        body["context"]["System"]["person"] = {"personId": "amzn1.account.ALICE"}
+
+        # No person_map passed
+        await sh.handle_alexa_request(hass, body)
+
+        event_data = hass.bus.async_fire.call_args[0][1]
+        assert event_data["event_person_id"] == "amzn1.account.ALICE"
+        assert "event_person_name" not in event_data
+

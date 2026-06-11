@@ -21,6 +21,7 @@ CONF_REFRESH_TOKEN = "refresh_token"
 CONF_AWS_ACCESS_KEY_ID = "aws_access_key_id"
 CONF_AWS_SECRET_ACCESS_KEY = "aws_secret_access_key"
 CONF_AWS_REGION = "aws_region"
+CONF_PERSON_MAP = "person_map"
 
 SERVICE_SEND = "send"
 INPUT_TEXT_ENTITY = "input_text.alexa_actionable_notification"

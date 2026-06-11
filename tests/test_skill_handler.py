@@ -574,6 +574,105 @@ class TestPersonId:
         assert event_data["event_person_id"] == "amzn1.account.ABC"
 
 
+class TestPersonName:
+    """Tests for person name resolution via person_map."""
+
+    @pytest.mark.asyncio
+    async def test_person_name_in_event_when_mapped(self):
+        """When person_id is in the person_map, event includes person_name."""
+        hass = _make_ha({"event": "e1", "text": "Q?", "suppress_confirmation": False})
+        body = _intent_request("AMAZON.YesIntent")
+        body["context"]["System"]["person"] = {"personId": "amzn1.account.ABC"}
+        person_map = {"amzn1.account.ABC": "Alice"}
+        await sh.handle_alexa_request(hass, body, person_map)
+
+        event_data = hass.bus.async_fire.call_args[0][1]
+        assert event_data["event_person_id"] == "amzn1.account.ABC"
+        assert event_data["event_person_name"] == "Alice"
+
+    @pytest.mark.asyncio
+    async def test_person_name_absent_when_not_mapped(self):
+        """When person_id is NOT in the person_map, no person_name in event."""
+        hass = _make_ha({"event": "e1", "text": "Q?", "suppress_confirmation": False})
+        body = _intent_request("AMAZON.YesIntent")
+        body["context"]["System"]["person"] = {"personId": "amzn1.account.UNKNOWN"}
+        person_map = {"amzn1.account.ABC": "Alice"}
+        await sh.handle_alexa_request(hass, body, person_map)
+
+        event_data = hass.bus.async_fire.call_args[0][1]
+        assert event_data["event_person_id"] == "amzn1.account.UNKNOWN"
+        assert "event_person_name" not in event_data
+
+    @pytest.mark.asyncio
+    async def test_person_name_absent_when_no_person(self):
+        """When no voice profile detected, no person fields in event."""
+        hass = _make_ha({"event": "e1", "text": "Q?", "suppress_confirmation": False})
+        body = _intent_request("AMAZON.YesIntent")
+        # No person in context
+        person_map = {"amzn1.account.ABC": "Alice"}
+        await sh.handle_alexa_request(hass, body, person_map)
+
+        event_data = hass.bus.async_fire.call_args[0][1]
+        assert "event_person_id" not in event_data
+        assert "event_person_name" not in event_data
+
+    @pytest.mark.asyncio
+    async def test_person_map_backward_compat(self):
+        """Without person_map, existing behavior (only person_id) is preserved."""
+        hass = _make_ha({"event": "e1", "text": "Q?", "suppress_confirmation": False})
+        body = _intent_request("AMAZON.YesIntent")
+        body["context"]["System"]["person"] = {"personId": "amzn1.account.ABC"}
+        # No person_map passed (backward compat)
+        await sh.handle_alexa_request(hass, body)
+
+        event_data = hass.bus.async_fire.call_args[0][1]
+        assert event_data["event_person_id"] == "amzn1.account.ABC"
+        assert "event_person_name" not in event_data
+
+    def test_resolve_person_name_with_mapping(self):
+        """Unit test for _resolve_person_name with a valid mapping."""
+        body = _intent_request("AMAZON.YesIntent")
+        body["context"]["System"]["person"] = {"personId": "amzn1.account.XYZ"}
+        person_id, person_name = sh._resolve_person_name(
+            body, {"amzn1.account.XYZ": "Bob"},
+        )
+        assert person_id == "amzn1.account.XYZ"
+        assert person_name == "Bob"
+
+    def test_resolve_person_name_no_mapping(self):
+        """Unit test for _resolve_person_name with empty mapping."""
+        body = _intent_request("AMAZON.YesIntent")
+        body["context"]["System"]["person"] = {"personId": "amzn1.account.XYZ"}
+        person_id, person_name = sh._resolve_person_name(body, {})
+        assert person_id == "amzn1.account.XYZ"
+        assert person_name is None
+
+    def test_resolve_person_name_no_person(self):
+        """Unit test for _resolve_person_name with no person in context."""
+        body = _intent_request("AMAZON.YesIntent")
+        person_id, person_name = sh._resolve_person_name(
+            body, {"amzn1.account.XYZ": "Bob"},
+        )
+        assert person_id is None
+        assert person_name is None
+
+    def test_resolve_person_name_no_map(self):
+        """Unit test for _resolve_person_name with no map provided."""
+        body = _intent_request("AMAZON.YesIntent")
+        body["context"]["System"]["person"] = {"personId": "amzn1.account.XYZ"}
+        person_id, person_name = sh._resolve_person_name(body)
+        assert person_id == "amzn1.account.XYZ"
+        assert person_name is None
+
+    def test_resolve_person_name_none_map(self):
+        """Unit test for _resolve_person_name with None map."""
+        body = _intent_request("AMAZON.YesIntent")
+        body["context"]["System"]["person"] = {"personId": "amzn1.account.XYZ"}
+        person_id, person_name = sh._resolve_person_name(body, None)
+        assert person_id == "amzn1.account.XYZ"
+        assert person_name is None
+
+
 # ---------------------------------------------------------------------------
 # Dialog payload helper
 # ---------------------------------------------------------------------------
