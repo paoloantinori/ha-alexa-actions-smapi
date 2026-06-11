@@ -48,6 +48,11 @@ _EN_DEFAULT: dict[str, str | list[str]] = {
         "on {Dates} at {Times}",
         "{Times}",
     ],
+    "freeform_samples": [
+        "{FreeFormText}",
+        "my answer is {FreeFormText}",
+        "I want to say {FreeFormText}",
+    ],
 }
 
 _DE_DEFAULT: dict[str, str | list[str]] = {
@@ -76,6 +81,11 @@ _DE_DEFAULT: dict[str, str | list[str]] = {
         "{Dates} um {Times}",
         "{Dates}",
         "am {Dates} um {Times}",
+    ],
+    "freeform_samples": [
+        "{FreeFormText}",
+        "meine Antwort ist {FreeFormText}",
+        "ich möchte sagen {FreeFormText}",
     ],
 }
 
@@ -106,6 +116,11 @@ _FR_DEFAULT: dict[str, str | list[str]] = {
         "{Dates}",
         "le {Dates} à {Times}",
     ],
+    "freeform_samples": [
+        "{FreeFormText}",
+        "ma réponse est {FreeFormText}",
+        "je veux dire {FreeFormText}",
+    ],
 }
 
 _IT_DEFAULT: dict[str, str | list[str]] = {
@@ -134,6 +149,11 @@ _IT_DEFAULT: dict[str, str | list[str]] = {
         "{Dates} alle {Times}",
         "{Dates}",
         "il {Dates} alle {Times}",
+    ],
+    "freeform_samples": [
+        "{FreeFormText}",
+        "la mia risposta è {FreeFormText}",
+        "voglio dire {FreeFormText}",
     ],
 }
 
@@ -164,6 +184,11 @@ _PT_DEFAULT: dict[str, str | list[str]] = {
         "{Dates}",
         "em {Dates} às {Times}",
     ],
+    "freeform_samples": [
+        "{FreeFormText}",
+        "minha resposta é {FreeFormText}",
+        "eu quero dizer {FreeFormText}",
+    ],
 }
 
 _ES_DEFAULT: dict[str, str | list[str]] = {
@@ -192,6 +217,11 @@ _ES_DEFAULT: dict[str, str | list[str]] = {
         "{Dates} a las {Times}",
         "{Dates}",
         "el {Dates} a las {Times}",
+    ],
+    "freeform_samples": [
+        "{FreeFormText}",
+        "mi respuesta es {FreeFormText}",
+        "quiero decir {FreeFormText}",
     ],
 }
 
@@ -330,6 +360,15 @@ def _build_intents(locale_data: dict[str, str | list[str]]) -> list[dict]:
                 {"name": "Times", "type": "AMAZON.TIME"},
             ],
             "samples": locale_data.get("date_samples", []),
+        }
+    )
+
+    # FreeForm intent with AMAZON.SearchQuery slot for free-form text answers
+    intents.append(
+        {
+            "name": "FreeForm",
+            "slots": [{"name": "FreeFormText", "type": "AMAZON.SearchQuery"}],
+            "samples": locale_data.get("freeform_samples", []),
         }
     )
 

@@ -26,7 +26,7 @@ REQUIRED_BUILTIN_INTENTS = [
     "AMAZON.FallbackIntent",
 ]
 
-CUSTOM_INTENTS = ["String", "Select", "Number", "Duration", "Date"]
+CUSTOM_INTENTS = ["String", "Select", "Number", "Duration", "Date", "FreeForm"]
 
 
 class TestLocaleLabels:

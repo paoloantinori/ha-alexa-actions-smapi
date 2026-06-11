@@ -421,6 +421,47 @@ class TestHandleString:
         assert event_data["event_response_type"] == sh.RESPONSE_STRING
 
 
+class TestHandleFreeForm:
+    @pytest.mark.asyncio
+    async def test_freeform_fires_event(self):
+        hass = _make_ha({"event": "e1", "text": "Q?", "suppress_confirmation": False})
+        r = await sh.handle_alexa_request(
+            hass,
+            _intent_request("FreeForm", {"FreeFormText": {"value": "I want pizza for dinner"}}),
+        )
+        hass.bus.async_fire.assert_called_once()
+        event_data = hass.bus.async_fire.call_args[0][1]
+        assert event_data["event_response"] == "I want pizza for dinner"
+        assert event_data["event_response_type"] == sh.RESPONSE_FREEFORM
+        assert r["response"]["outputSpeech"]["text"] == "Okay"
+
+    @pytest.mark.asyncio
+    async def test_freeform_missing_entity(self):
+        hass = _make_ha(None)
+        r = await sh.handle_alexa_request(
+            hass,
+            _intent_request("FreeForm", {"FreeFormText": {"value": "anything"}}),
+        )
+        # Should return empty response gracefully (no crash)
+        assert r["response"]["shouldEndSession"] is True
+        assert "outputSpeech" not in r["response"]
+
+    @pytest.mark.asyncio
+    async def test_freeform_model_included(self):
+        """Verify FreeForm intent appears in the interaction model."""
+        from custom_components.alexa_actions.models import get_model
+
+        model = get_model("en-US", "test skill")
+        intent_names = [i["name"] for i in model["interactionModel"]["languageModel"]["intents"]]
+        assert "FreeForm" in intent_names
+
+        # Verify slot type is AMAZON.SearchQuery
+        freeform = next(i for i in model["interactionModel"]["languageModel"]["intents"] if i["name"] == "FreeForm")
+        assert len(freeform["slots"]) == 1
+        assert freeform["slots"][0]["name"] == "FreeFormText"
+        assert freeform["slots"][0]["type"] == "AMAZON.SearchQuery"
+
+
 class TestHandleSelect:
     @pytest.mark.asyncio
     async def test_select_response(self):

@@ -24,6 +24,7 @@ from .const import (
     RESPONSE_DATE_TIME,
     RESPONSE_DIALOG,
     RESPONSE_DURATION,
+    RESPONSE_FREEFORM,
     RESPONSE_NO,
     RESPONSE_NONE,
     RESPONSE_NUMERIC,
@@ -443,6 +444,16 @@ async def _handle_string(hass: HomeAssistant, body: dict, ls: dict) -> dict:
     return _build_response(speak_output=speak)
 
 
+async def _handle_freeform(hass: HomeAssistant, body: dict, ls: dict) -> dict:
+    """FreeForm intent — extract SearchQuery slot, fire ResponseFreeForm."""
+    ha_state = _get_ha_state(hass)
+    if not ha_state:
+        return _build_response()
+    text = _get_slot_value(body, "FreeFormText")
+    speak = _post_ha_event(hass, ha_state, text, RESPONSE_FREEFORM, ls, body)
+    return _build_response(speak_output=speak)
+
+
 async def _handle_select(hass: HomeAssistant, body: dict, ls: dict) -> dict:
     """Select intent — resolve slot, fire ResponseSelect, speak selection.
 
@@ -655,6 +666,7 @@ _INTENT_HANDLERS: dict[str, Any] = {
     "AMAZON.NoIntent": _handle_no,
     "Number": _handle_number,
     "String": _handle_string,
+    "FreeForm": _handle_freeform,
     "Select": _handle_select,
     "Duration": _handle_duration,
     "Date": _handle_date,
