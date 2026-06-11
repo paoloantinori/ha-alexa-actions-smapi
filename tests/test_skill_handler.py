@@ -161,6 +161,39 @@ class TestBuildResponse:
         assert r["response"]["reprompt"]["outputSpeech"]["type"] == "PlainText"
         assert r["response"]["reprompt"]["outputSpeech"]["text"] == "Try again"
 
+    def test_response_with_card(self):
+        """Card should be included in the response when provided."""
+        card = {"type": "Simple", "title": "Title", "content": "Body text"}
+        r = sh._build_response(speak_output="Hello", card=card)
+        assert r["response"]["card"] == card
+        assert r["response"]["card"]["type"] == "Simple"
+        assert r["response"]["card"]["title"] == "Title"
+        assert r["response"]["card"]["content"] == "Body text"
+
+    def test_response_without_card(self):
+        """No card key when card is not provided — backward compatible."""
+        r = sh._build_response(speak_output="Hello")
+        assert "card" not in r["response"]
+
+    def test_response_with_none_card(self):
+        """Explicitly passing card=None should not add card to response."""
+        r = sh._build_response(speak_output="Hello", card=None)
+        assert "card" not in r["response"]
+
+    def test_response_with_card_and_reprompt(self):
+        """Card should coexist with speech and reprompt."""
+        card = {"type": "Simple", "title": "T", "content": "C"}
+        r = sh._build_response(
+            speak_output="Question",
+            reprompt="Try again",
+            should_end_session=False,
+            card=card,
+        )
+        assert r["response"]["outputSpeech"]["text"] == "Question"
+        assert r["response"]["reprompt"]["outputSpeech"]["text"] == "Try again"
+        assert r["response"]["card"] == card
+        assert r["response"]["shouldEndSession"] is False
+
 
 # ---------------------------------------------------------------------------
 # Slot extraction tests
@@ -364,6 +397,133 @@ class TestHandleLaunch:
         assert r["response"]["outputSpeech"]["type"] == "PlainText"
         assert r["response"]["reprompt"]["outputSpeech"]["type"] == "SSML"
         assert r["response"]["reprompt"]["outputSpeech"]["ssml"] == ssml_reprompt
+
+    @pytest.mark.asyncio
+    async def test_display_card_in_response(self):
+        """When display_title and display_body are set, card appears in launch response."""
+        hass = _make_ha({
+            "event": "evt_card",
+            "text": "Did you take the pill?",
+            "suppress_confirmation": False,
+            "display_title": "Promemoria Pastiglia",
+            "display_body": "Hai preso la pastiglia oggi?",
+        })
+        r = await sh.handle_alexa_request(hass, _launch_request())
+        assert r["response"]["outputSpeech"]["text"] == "Did you take the pill?"
+        assert r["response"]["shouldEndSession"] is False
+        card = r["response"]["card"]
+        assert card["type"] == "Simple"
+        assert card["title"] == "Promemoria Pastiglia"
+        assert card["content"] == "Hai preso la pastiglia oggi?"
+
+    @pytest.mark.asyncio
+    async def test_display_card_title_only(self):
+        """When only display_title is set, card has empty content."""
+        hass = _make_ha({
+            "event": "evt_title",
+            "text": "Question?",
+            "suppress_confirmation": False,
+            "display_title": "Reminder",
+        })
+        r = await sh.handle_alexa_request(hass, _launch_request())
+        card = r["response"]["card"]
+        assert card["type"] == "Simple"
+        assert card["title"] == "Reminder"
+        assert card["content"] == ""
+
+    @pytest.mark.asyncio
+    async def test_display_card_body_only(self):
+        """When only display_body is set, card has empty title."""
+        hass = _make_ha({
+            "event": "evt_body",
+            "text": "Question?",
+            "suppress_confirmation": False,
+            "display_body": "Some detail text",
+        })
+        r = await sh.handle_alexa_request(hass, _launch_request())
+        card = r["response"]["card"]
+        assert card["type"] == "Simple"
+        assert card["title"] == ""
+        assert card["content"] == "Some detail text"
+
+    @pytest.mark.asyncio
+    async def test_no_card_without_display_fields(self):
+        """No card in response when display fields are absent."""
+        hass = _make_ha({
+            "event": "evt_nocard",
+            "text": "Just a question?",
+            "suppress_confirmation": False,
+        })
+        r = await sh.handle_alexa_request(hass, _launch_request())
+        assert "card" not in r["response"]
+
+
+class TestBuildCard:
+    """Tests for _build_card helper function."""
+
+    def test_build_card_with_both_fields(self):
+        ha_state = sh.HaState(
+            event_id="e1",
+            suppress_confirmation=False,
+            text="Q?",
+            display_title="Title",
+            display_body="Body text",
+        )
+        card = sh._build_card(ha_state)
+        assert card is not None
+        assert card["type"] == "Simple"
+        assert card["title"] == "Title"
+        assert card["content"] == "Body text"
+
+    def test_build_card_title_only(self):
+        ha_state = sh.HaState(
+            event_id="e1",
+            suppress_confirmation=False,
+            text="Q?",
+            display_title="Title Only",
+        )
+        card = sh._build_card(ha_state)
+        assert card is not None
+        assert card["title"] == "Title Only"
+        assert card["content"] == ""
+
+    def test_build_card_body_only(self):
+        ha_state = sh.HaState(
+            event_id="e1",
+            suppress_confirmation=False,
+            text="Q?",
+            display_body="Body Only",
+        )
+        card = sh._build_card(ha_state)
+        assert card is not None
+        assert card["title"] == ""
+        assert card["content"] == "Body Only"
+
+    def test_build_card_returns_none_when_no_fields(self):
+        ha_state = sh.HaState(
+            event_id="e1",
+            suppress_confirmation=False,
+            text="Q?",
+        )
+        card = sh._build_card(ha_state)
+        assert card is None
+
+    def test_build_card_json_matches_alexa_spec(self):
+        """Verify the card dict matches Alexa Simple card specification."""
+        ha_state = sh.HaState(
+            event_id="e1",
+            suppress_confirmation=False,
+            text="Q?",
+            display_title="Promemoria Pastiglia",
+            display_body="Hai preso la pastiglia oggi?",
+        )
+        card = sh._build_card(ha_state)
+        # Alexa Simple card spec: { "type": "Simple", "title": "...", "content": "..." }
+        assert isinstance(card, dict)
+        assert set(card.keys()) == {"type", "title", "content"}
+        assert card["type"] == "Simple"
+        assert isinstance(card["title"], str)
+        assert isinstance(card["content"], str)
 
 
 class TestHandleYes:

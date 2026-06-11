@@ -647,3 +647,265 @@ class TestEndToEndQueuePipeline:
             {"request": {"type": "LaunchRequest", "locale": "en-US"}},
         )
         assert response["response"]["outputSpeech"]["text"] == "Did you lock the door?"
+
+
+# ===========================================================================
+# Test class: Display card contract
+# ===========================================================================
+
+
+class TestDisplayCardSchemaContract:
+    """Verify SERVICE_SEND_SCHEMA accepts display_title and display_body."""
+
+    def test_schema_accepts_display_title(self):
+        """The schema must accept 'display_title'."""
+        schema = init_mod.SERVICE_SEND_SCHEMA
+        result = schema(
+            {
+                "text": "Test question",
+                "suppress_confirmation": False,
+                "display_title": "Promemoria",
+            }
+        )
+        assert result["display_title"] == "Promemoria"
+
+    def test_schema_accepts_display_body(self):
+        """The schema must accept 'display_body'."""
+        schema = init_mod.SERVICE_SEND_SCHEMA
+        result = schema(
+            {
+                "text": "Test question",
+                "suppress_confirmation": False,
+                "display_body": "Hai preso la pastiglia oggi?",
+            }
+        )
+        assert result["display_body"] == "Hai preso la pastiglia oggi?"
+
+    def test_schema_accepts_both_display_fields(self):
+        """The schema must accept both display fields together."""
+        schema = init_mod.SERVICE_SEND_SCHEMA
+        result = schema(
+            {
+                "text": "Test question",
+                "suppress_confirmation": False,
+                "display_title": "Promemoria Pastiglia",
+                "display_body": "Hai preso la pastiglia oggi?",
+            }
+        )
+        assert result["display_title"] == "Promemoria Pastiglia"
+        assert result["display_body"] == "Hai preso la pastiglia oggi?"
+
+    def test_schema_omit_display_fields(self):
+        """Backward compat: display fields are optional."""
+        schema = init_mod.SERVICE_SEND_SCHEMA
+        result = schema({"text": "Hello", "suppress_confirmation": True})
+        assert "display_title" not in result
+        assert "display_body" not in result
+
+
+class TestDisplayCardPayloadContract:
+    """Verify the payload built by async_send_notification includes display fields."""
+
+    @pytest.mark.asyncio
+    async def test_payload_includes_display_title(self):
+        """When display_title is provided, it must appear in the entity payload."""
+        hass = _make_mock_hass()
+        handler = await _setup_entry_and_get_handler(hass)
+
+        data = init_mod.SERVICE_SEND_SCHEMA(
+            {
+                "text": "Did you take the pill?",
+                "suppress_confirmation": False,
+                "display_title": "Promemoria",
+            }
+        )
+        await handler(_make_service_call(data))
+
+        set_call = hass.states.async_set.call_args
+        payload = _read_payload_from_set_call(set_call)
+
+        assert payload["display_title"] == "Promemoria"
+
+    @pytest.mark.asyncio
+    async def test_payload_includes_display_body(self):
+        """When display_body is provided, it must appear in the entity payload."""
+        hass = _make_mock_hass()
+        handler = await _setup_entry_and_get_handler(hass)
+
+        data = init_mod.SERVICE_SEND_SCHEMA(
+            {
+                "text": "Did you take the pill?",
+                "suppress_confirmation": False,
+                "display_body": "Hai preso la pastiglia oggi?",
+            }
+        )
+        await handler(_make_service_call(data))
+
+        set_call = hass.states.async_set.call_args
+        payload = _read_payload_from_set_call(set_call)
+
+        assert payload["display_body"] == "Hai preso la pastiglia oggi?"
+
+    @pytest.mark.asyncio
+    async def test_payload_includes_both_display_fields(self):
+        """When both display fields are provided, both must appear in the payload."""
+        hass = _make_mock_hass()
+        handler = await _setup_entry_and_get_handler(hass)
+
+        data = init_mod.SERVICE_SEND_SCHEMA(
+            {
+                "text": "Did you take the pill?",
+                "suppress_confirmation": False,
+                "display_title": "Promemoria Pastiglia",
+                "display_body": "Hai preso la pastiglia oggi?",
+            }
+        )
+        await handler(_make_service_call(data))
+
+        set_call = hass.states.async_set.call_args
+        payload = _read_payload_from_set_call(set_call)
+
+        assert payload["display_title"] == "Promemoria Pastiglia"
+        assert payload["display_body"] == "Hai preso la pastiglia oggi?"
+
+    @pytest.mark.asyncio
+    async def test_payload_omits_display_fields_when_absent(self):
+        """No display fields in payload when not provided — backward compatible."""
+        hass = _make_mock_hass()
+        handler = await _setup_entry_and_get_handler(hass)
+
+        data = init_mod.SERVICE_SEND_SCHEMA(
+            {
+                "text": "Hello",
+                "suppress_confirmation": False,
+            }
+        )
+        await handler(_make_service_call(data))
+
+        set_call = hass.states.async_set.call_args
+        payload = _read_payload_from_set_call(set_call)
+
+        assert "display_title" not in payload
+        assert "display_body" not in payload
+
+
+class TestDisplayCardBlueprintContract:
+    """Verify blueprint references display card fields."""
+
+    def test_blueprint_has_display_title_input(self):
+        """Blueprint must define a display_title input."""
+        text = _read_blueprint_text()
+        assert re.search(r"^\s+display_title:", text, re.MULTILINE), (
+            "Blueprint does not define 'display_title' input"
+        )
+
+    def test_blueprint_has_display_body_input(self):
+        """Blueprint must define a display_body input."""
+        text = _read_blueprint_text()
+        assert re.search(r"^\s+display_body:", text, re.MULTILINE), (
+            "Blueprint does not define 'display_body' input"
+        )
+
+    def test_blueprint_includes_display_title_in_service_data(self):
+        """Blueprint must pass display_title in the service call data."""
+        text = _read_blueprint_text()
+        assert re.search(r"^\s+display_title\s*:", text, re.MULTILINE), (
+            "Blueprint service call data does not include 'display_title' key"
+        )
+
+    def test_blueprint_includes_display_body_in_service_data(self):
+        """Blueprint must pass display_body in the service call data."""
+        text = _read_blueprint_text()
+        assert re.search(r"^\s+display_body\s*:", text, re.MULTILINE), (
+            "Blueprint service call data does not include 'display_body' key"
+        )
+
+    def test_blueprint_display_title_input_has_default(self):
+        """display_title input should default to empty string."""
+        text = _read_blueprint_text()
+        match = re.search(
+            r"display_title:.*?default:\s*[\"']{2}", text, re.DOTALL
+        )
+        assert match, "display_title input should have default: ''"
+
+    def test_blueprint_display_body_input_has_default(self):
+        """display_body input should default to empty string."""
+        text = _read_blueprint_text()
+        match = re.search(
+            r"display_body:.*?default:\s*[\"']{2}", text, re.DOTALL
+        )
+        assert match, "display_body input should have default: ''"
+
+
+class TestEndToEndDisplayCard:
+    """Full pipeline: service call -> entity state -> handler -> card in response."""
+
+    @pytest.mark.asyncio
+    async def test_display_card_flows_through_pipeline(self):
+        """Display card survives the full service->entity->handler pipeline."""
+        # Step 1: Service call writes entity state
+        hass = _make_mock_hass()
+        handler = await _setup_entry_and_get_handler(hass)
+
+        data = init_mod.SERVICE_SEND_SCHEMA(
+            {
+                "text": "Did you take the pill?",
+                "suppress_confirmation": False,
+                "display_title": "Promemoria Pastiglia",
+                "display_body": "Hai preso la pastiglia oggi?",
+            }
+        )
+        await handler(_make_service_call(data))
+
+        # Step 2: Read the payload that was written to entity state
+        payload_json = hass.states.async_set.call_args.args[1]
+
+        # Step 3: Set up a NEW hass mock with this payload for skill_handler
+        hass2 = MagicMock()
+        mock_state = MagicMock()
+        mock_state.state = payload_json
+        hass2.states.get.return_value = mock_state
+
+        # Step 4: Send a LaunchRequest through skill_handler
+        launch_body = {
+            "request": {"type": "LaunchRequest", "locale": "en-US"},
+        }
+        response = await sh.handle_alexa_request(hass2, launch_body)
+
+        # Step 5: Verify card appears in response
+        assert response["response"]["outputSpeech"]["text"] == "Did you take the pill?"
+        assert response["response"]["shouldEndSession"] is False
+        card = response["response"]["card"]
+        assert card is not None
+        assert card["type"] == "Simple"
+        assert card["title"] == "Promemoria Pastiglia"
+        assert card["content"] == "Hai preso la pastiglia oggi?"
+
+    @pytest.mark.asyncio
+    async def test_no_card_without_display_fields(self):
+        """No card in response when display fields are absent — backward compatible."""
+        hass = _make_mock_hass()
+        handler = await _setup_entry_and_get_handler(hass)
+
+        data = init_mod.SERVICE_SEND_SCHEMA(
+            {
+                "text": "Did you take the pill?",
+                "suppress_confirmation": False,
+            }
+        )
+        await handler(_make_service_call(data))
+
+        payload_json = hass.states.async_set.call_args.args[1]
+
+        hass2 = MagicMock()
+        mock_state = MagicMock()
+        mock_state.state = payload_json
+        hass2.states.get.return_value = mock_state
+
+        launch_body = {
+            "request": {"type": "LaunchRequest", "locale": "en-US"},
+        }
+        response = await sh.handle_alexa_request(hass2, launch_body)
+
+        assert response["response"]["outputSpeech"]["text"] == "Did you take the pill?"
+        assert "card" not in response["response"]

@@ -54,7 +54,16 @@ NO_NOTIFICATIONS = "NO_NOTIFICATIONS"
 class HaState:
     """Parsed state from the actionable-notification entity."""
 
-    __slots__ = ("event_id", "reprompt", "suppress_confirmation", "text", "dialog", "options")
+    __slots__ = (
+        "event_id",
+        "reprompt",
+        "suppress_confirmation",
+        "text",
+        "dialog",
+        "options",
+        "display_title",
+        "display_body",
+    )
 
     def __init__(
         self,
@@ -64,6 +73,8 @@ class HaState:
         reprompt: str | None = None,
         dialog: DialogDefinition | None = None,
         options: list[str] | None = None,
+        display_title: str | None = None,
+        display_body: str | None = None,
     ) -> None:
         self.event_id = event_id
         self.reprompt = reprompt
@@ -71,6 +82,8 @@ class HaState:
         self.text = text
         self.dialog = dialog
         self.options = options
+        self.display_title = display_title
+        self.display_body = display_body
 
 
 @dataclasses.dataclass
@@ -286,6 +299,8 @@ def _get_ha_state(hass: HomeAssistant) -> HaState | None:
         text=notification.get("text"),
         dialog=dialog,
         options=notification.get("options"),
+        display_title=notification.get("display_title"),
+        display_body=notification.get("display_body"),
     )
 
 
@@ -359,10 +374,25 @@ def _build_speech(text: str) -> dict:
     return {"type": "PlainText", "text": text}
 
 
+def _build_card(ha_state: HaState) -> dict | None:
+    """Build an Alexa Simple card dict if display fields are present.
+
+    Returns None when no display fields are provided (backward compatible).
+    """
+    if ha_state.display_title or ha_state.display_body:
+        return {
+            "type": "Simple",
+            "title": ha_state.display_title or "",
+            "content": ha_state.display_body or "",
+        }
+    return None
+
+
 def _build_response(
     speak_output: str | None = None,
     reprompt: str | None = None,
     should_end_session: bool = True,
+    card: dict | None = None,
 ) -> dict:
     """Build a standard Alexa skill response JSON envelope."""
     response: dict[str, Any] = {}
@@ -370,6 +400,8 @@ def _build_response(
         response["outputSpeech"] = _build_speech(speak_output)
     if reprompt:
         response["reprompt"] = {"outputSpeech": _build_speech(reprompt)}
+    if card:
+        response["card"] = card
     response["shouldEndSession"] = should_end_session
     return {"version": "1.0", "response": response}
 
@@ -461,8 +493,10 @@ async def _handle_launch(hass: HomeAssistant, body: dict, ls: dict, person_map: 
 
     # Single-turn (existing behavior)
     reprompt = ha_state.reprompt or ha_state.text
+    card = _build_card(ha_state)
     return _build_response(
         speak_output=ha_state.text, reprompt=reprompt, should_end_session=False,
+        card=card,
     )
 
 

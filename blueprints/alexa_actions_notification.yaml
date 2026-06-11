@@ -67,6 +67,22 @@ blueprint:
           multiple: true
           options: []
           custom_value: true
+    display_title:
+      name: Display Title
+      description: >-
+        Title shown on Echo Show/Spot screens.
+        Leave empty for no visual card.
+      default: ""
+      selector:
+        text:
+    display_body:
+      name: Display Body
+      description: >-
+        Body text shown on Echo Show/Spot screens below the title.
+        Leave empty for no visual card.
+      default: ""
+      selector:
+        text:
     timeout_seconds:
       name: Response Timeout (seconds)
       description: How long to wait for the user to respond.
@@ -99,6 +115,8 @@ action:
       reprompt: !input reprompt_text
       suppress_confirmation: !input suppress_confirmation
       options: !input options
+      display_title: !input display_title
+      display_body: !input display_body
     target:
       entity_id: !input alexa_device
 

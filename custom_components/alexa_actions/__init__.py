@@ -31,6 +31,8 @@ SERVICE_SEND_SCHEMA = vol.Schema(
         vol.Optional("suppress_confirmation", default=False): bool,
         vol.Optional("options"): [str],
         vol.Optional("dialog"): dict,
+        vol.Optional("display_title"): str,
+        vol.Optional("display_body"): str,
     }
 )
 
@@ -81,13 +83,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if options:
             payload["options"] = options
 
-        reprompt = call.data.get("reprompt")
-        if reprompt:
-            payload["reprompt"] = reprompt
-
-        dialog = call.data.get("dialog")
-        if dialog:
-            payload["dialog"] = dialog
+        # Conditionally include optional payload fields.
+        # Each field is read from the validated service call data and
+        # added to the payload only when truthy (keeps payload lean
+        # and avoids storing empty strings / empty dicts in the entity).
+        for _key in ("reprompt", "dialog", "display_title", "display_body"):
+            _val = call.data.get(_key)
+            if _val:
+                payload[_key] = _val
 
         # --- Queue-based storage ---
         # Read the current entity state and parse it as a JSON array.
