@@ -161,6 +161,25 @@ class TestServiceSchemaContract:
         with pytest.raises(Exception):
             schema({"suppress_confirmation": False})
 
+    def test_schema_tolerates_entity_id_from_ha_ui(self):
+        """HA's service UI injects entity_id into data — schema must not reject it.
+
+        Regression guard: without entity_id in the schema, calling
+        alexa_actions.send from the HA UI service panel fails with
+        'extra keys not allowed @ data['entity_id']'.
+        """
+        schema = init_mod.SERVICE_SEND_SCHEMA
+        result = schema(
+            {
+                "text": "Test question",
+                "suppress_confirmation": False,
+                "entity_id": "media_player.echo_show",
+            }
+        )
+        assert result["text"] == "Test question"
+        # entity_id is tolerated but not used for routing
+        assert result.get("entity_id") == "media_player.echo_show"
+
 
 # ===========================================================================
 # Test class: Payload builder
