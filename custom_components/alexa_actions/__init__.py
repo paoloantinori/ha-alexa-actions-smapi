@@ -35,6 +35,8 @@ SERVICE_SEND_SCHEMA = vol.Schema(
         vol.Optional("dialog"): dict,
         vol.Optional("display_title"): str,
         vol.Optional("display_body"): str,
+        # HA UI may inject entity_id into data; tolerate it silently.
+        vol.Optional("entity_id"): str,
     }
 )
 
