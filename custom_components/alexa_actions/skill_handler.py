@@ -656,7 +656,9 @@ async def _handle_number(hass: HomeAssistant, body: dict, ls: dict, person_map: 
         return _build_response()
     number = _get_slot_value(body, "Numbers")
     if number == "?" or not number:
-        raise ValueError("Numeric slot value could not be resolved")
+        _LOGGER.warning("Number intent fired with unresolvable numeric slot; re-asking (possible mis-route)")
+        reprompt = ha_state.reprompt or ha_state.text
+        return _build_response(speak_output=reprompt, reprompt=reprompt, should_end_session=False)
     speak = _post_ha_event(hass, ha_state, number, RESPONSE_NUMERIC, ls, body, person_map)
     return _build_response(speak_output=speak)
 
@@ -703,7 +705,9 @@ async def _handle_select(hass: HomeAssistant, body: dict, ls: dict, person_map: 
                     selection = opt
                     break
     if not selection:
-        raise ValueError("Selection slot value could not be resolved")
+        _LOGGER.warning("Select intent fired with unresolvable selection slot; re-asking (possible mis-route)")
+        reprompt = ha_state.reprompt or ha_state.text
+        return _build_response(speak_output=reprompt, reprompt=reprompt, should_end_session=False)
     _post_ha_event(hass, ha_state, selection, RESPONSE_SELECT, ls, body, person_map)
     template = ls.get(SELECTED, "You selected {}")
     speak = template.format(selection)
@@ -716,7 +720,12 @@ async def _handle_duration(hass: HomeAssistant, body: dict, ls: dict, person_map
     if not ha_state:
         return _build_response()
     duration = _get_slot_value(body, "Durations")
-    seconds = _parse_iso_duration(duration)
+    try:
+        seconds = _parse_iso_duration(duration)
+    except ValueError:
+        _LOGGER.warning("Duration intent fired with unparseable duration; re-asking (possible mis-route)")
+        reprompt = ha_state.reprompt or ha_state.text
+        return _build_response(speak_output=reprompt, reprompt=reprompt, should_end_session=False)
     speak = _post_ha_event(hass, ha_state, seconds, RESPONSE_DURATION, ls, body, person_map)
     return _build_response(speak_output=speak)
 
@@ -729,7 +738,9 @@ async def _handle_date(hass: HomeAssistant, body: dict, ls: dict, person_map: di
     date_val = _get_slot_value(body, "Dates")
     time_val = _get_slot_value(body, "Times")
     if not date_val and not time_val:
-        raise ValueError("Both date and time slot values are empty")
+        _LOGGER.warning("Date intent fired with empty date/time slots; re-asking (possible mis-route)")
+        reprompt = ha_state.reprompt or ha_state.text
+        return _build_response(speak_output=reprompt, reprompt=reprompt, should_end_session=False)
     result = {**_parse_date(date_val), **_parse_time(time_val)}
     speak = _post_ha_event(
         hass, ha_state, json.dumps(result), RESPONSE_DATE_TIME, ls, body, person_map,
