@@ -42,6 +42,20 @@ class AlexaSkillView(HomeAssistantView):
                 status=400,
             )
 
+        # Diagnostic: log every incoming Alexa skill request (DEBUG, so it is silent
+        # unless `custom_components.alexa_actions` is set to debug via logger.set_level).
+        _req = body.get("request", {}) if isinstance(body, dict) else {}
+        _sess = body.get("session") if isinstance(body, dict) else {}
+        _LOGGER.debug(
+            "ALEXA_WEBHOOK_IN type=%s intent=%s reason=%s session_new=%s session_attrs=%s locale=%s",
+            _req.get("type"),
+            (_req.get("intent") or {}).get("name"),
+            _req.get("reason"),
+            _sess.get("new"),
+            list((_sess.get("attributes") or {}).keys()),
+            _req.get("locale"),
+        )
+
         # Resolve person_map from the first config entry's options.
         person_map: dict[str, str] | None = None
         entries = self._hass.config_entries.async_entries(DOMAIN)
@@ -49,6 +63,15 @@ class AlexaSkillView(HomeAssistantView):
             person_map = entries[0].options.get(CONF_PERSON_MAP)
 
         response = await handle_alexa_request(self._hass, body, person_map)
+        # Diagnostic: log the response we return (DEBUG).
+        _resp = response.get("response", {}) if isinstance(response, dict) else {}
+        _LOGGER.debug(
+            "ALEXA_WEBHOOK_OUT shouldEndSession=%s has_output=%s has_reprompt=%s directives=%s",
+            _resp.get("shouldEndSession"),
+            bool(_resp.get("outputSpeech")),
+            bool(_resp.get("reprompt")),
+            [d.get("type") for d in (_resp.get("directives") or [])],
+        )
         return web.json_response(response)
 
 

@@ -286,10 +286,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             queue = json.loads(current.state)
         except (json.JSONDecodeError, TypeError):
             return
-        if not isinstance(queue, list) or not queue:
+        if not isinstance(queue, list) or len(queue) < 2:
+            # AUTO_TRIGGER_GUARD: 0 items = nothing queued; 1 item = only the
+            # just-answered notification (still head of the queue until
+            # _advance_queue pops it, because this listener fires inside the
+            # response event BEFORE the advance). Only auto-trigger when an
+            # ADDITIONAL notification is genuinely queued beyond the one just
+            # answered; otherwise we re-launch the answered skill and it speaks
+            # "No pending notifications" on the now-empty queue.
             return
 
-        next_item = queue[0]
+        next_item = queue[1]
         device = next_item.get("alexa_device", "")
         skill_id = entry.data.get(CONF_SKILL_ID, "")
         if device and skill_id:
