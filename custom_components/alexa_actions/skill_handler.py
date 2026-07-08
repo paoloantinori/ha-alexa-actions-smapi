@@ -847,9 +847,18 @@ async def _handle_fallback(hass: HomeAssistant, body: dict, ls: dict, person_map
 
 
 async def _handle_session_ended(hass: HomeAssistant, body: dict, ls: dict, person_map: dict[str, str] | None = None) -> dict:
-    """SessionEndedRequest — fire ResponseNone on timeout/user-initiated."""
+    """SessionEndedRequest — fire ResponseNone only on a genuine reprompt timeout.
+
+    USER_INITIATED almost always means the session was killed by a newer launch
+    (a long-lived zombie session), NOT that the active notification was answered.
+    Firing/popping on it misattributes the end to whatever notification is now at
+    queue[0] (often a brand-new one), popping it and making the new LaunchRequest
+    speak "No pending notifications". So USER_INITIATED is ignored; re-asking is
+    handled by the reminder's staleness logic, and the queue advances only on
+    real IntentResponses.
+    """
     reason = body.get("request", {}).get("reason", "")
-    if reason in ("EXCEEDED_MAX_REPROMPTS", "USER_INITIATED"):
+    if reason == "EXCEEDED_MAX_REPROMPTS":
         ha_state = _get_ha_state(hass)
         if ha_state:
             _post_ha_event(hass, ha_state, RESPONSE_NONE, RESPONSE_NONE, ls, body, person_map)
@@ -977,9 +986,10 @@ async def handle_alexa_request(
         handler = _REQUEST_TYPE_HANDLERS.get(req_type)
         if handler:
             result = await handler(hass, request_body, locale_strings, person_map)
-            # SessionEndedRequest should also advance the queue.
-            if req_type == "SessionEndedRequest":
-                await _advance_queue(hass)
+            # Do NOT advance the queue on SessionEndedRequest: it is frequently a
+            # zombie session killed by a newer launch, and popping here
+            # misattributes the end to the new notification at queue[0]. The queue
+            # advances on real IntentResponses instead.
             return result
 
         _LOGGER.warning("Unhandled request type: %s", req_type)
